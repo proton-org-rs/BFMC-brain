@@ -46,7 +46,8 @@ from src.utils.messages.allMessages import (
     SerialConnectionState,
     ControlCalib,
     IsAlive,
-    RequestSteerLimits
+    RequestSteerLimits,
+    ToggleStopLine
 )
 from src.utils.messages.messageHandlerSubscriber import messageHandlerSubscriber
 from src.utils.messages.messageHandlerSender import messageHandlerSender
@@ -107,7 +108,8 @@ class threadWrite(ThreadWithStop):
         self.controlCalibSubscriber = messageHandlerSubscriber(self.queuesList, ControlCalib, "lastOnly", True)
         self.isAliveSubscriber = messageHandlerSubscriber(self.queuesList, IsAlive, "lastOnly", True)
         self.requestSteerLimitsSubscriber = messageHandlerSubscriber(self.queuesList, RequestSteerLimits, "lastOnly", True)
-        
+        self.toggleStopLineSubscriber = messageHandlerSubscriber(self.queuesList, ToggleStopLine, "lastOnly", True)
+    
     def _init_senders(self):
         self.serialConnectionStateSender = messageHandlerSender(self.queuesList, SerialConnectionState)
 
@@ -271,6 +273,13 @@ class threadWrite(ThreadWithStop):
                     if self.debugger:
                         self.logger.info(imuRecv)
                     command = {"action": "imu", "activate": int(imuRecv)}
+                    self.send_to_serial(command)
+
+                toggleStopLineRecv = self.toggleStopLineSubscriber.receive()
+                if toggleStopLineRecv is not None:
+                    if self.debugger:
+                        self.logger.info(f"ToggleStopLine: {toggleStopLineRecv}")
+                    command = {"action": "stopLine", "activate": int(toggleStopLineRecv)}
                     self.send_to_serial(command)
 
         except Exception as e:

@@ -48,7 +48,8 @@ from src.utils.messages.allMessages import (
     CalibPWMData,
     CalibRunDone,
     SteeringLimits,
-    AliveSignal
+    AliveSignal,
+    StopLine
 )
 from src.utils.messages.messageHandlerSender import messageHandlerSender
 
@@ -102,6 +103,7 @@ class threadRead(ThreadWithStop):
         self.calibRunDoneSender = messageHandlerSender(self.queuesList, CalibRunDone)
         self.steeringLimitsSender = messageHandlerSender(self.queuesList, SteeringLimits)
         self.aliveSignalSender = messageHandlerSender(self.queuesList, AliveSignal)
+        self.stopLineSender = messageHandlerSender(self.queuesList, StopLine)
 
     # ====================================== RUN ==========================================
     def thread_work(self):
@@ -165,6 +167,9 @@ class threadRead(ThreadWithStop):
                     self.imuDataSender.send(str(data))
                 else:
                     self.imuAckSender.send(splittedValue[0])
+
+            elif action == "stopLine":
+                self.stopLineSender.send(int(value))
 
             elif action == "brake":
                 self.currentSpeedSender.send(0.0)

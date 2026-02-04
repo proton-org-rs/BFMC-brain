@@ -59,6 +59,16 @@ class LaneKeeping(Enum):
     msgID = 5
     msgType = "int"
 
+class laneCamera(Enum):
+    """
+    Lane detection camera stream - 640x480 RGB frame as numpy bytes.
+    Used for autonomous driving lane detection without base64 encoding overhead.
+    """
+    Queue = "General"
+    Owner = "threadCamera"
+    msgID = 6
+    msgType = "dict"  # Raw numpy array bytes for low-latency processing
+
 ################################# processCarsAndSemaphores ##################################
 class Cars(Enum):
     Queue = "General"
@@ -267,6 +277,17 @@ class SteeringLimits(Enum):
     msgID = 12
     msgType = "dict"
 
+class StopLine(Enum):
+    Queue = "General"
+    Owner = "threadRead"
+    msgID = 13
+    msgType = "bool"
+
+class ToggleStopLine(Enum):
+    Queue = "General"
+    Owner = "Dashboard"
+    msgID = 14
+    msgType = "int"
 
 ################################# From Locsys ##################################
 class Location(Enum):

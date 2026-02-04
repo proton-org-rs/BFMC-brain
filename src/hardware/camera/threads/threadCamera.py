@@ -35,6 +35,7 @@ import time
 from src.utils.messages.allMessages import (
     mainCamera,
     serialCamera,
+    laneCamera,
     Recording,
     Record,
     Brightness,
@@ -69,6 +70,11 @@ class threadCamera(ThreadWithStop):
         self.recordingSender = messageHandlerSender(self.queuesList, Recording)
         self.mainCameraSender = messageHandlerSender(self.queuesList, mainCamera)
         self.serialCameraSender = messageHandlerSender(self.queuesList, serialCamera)
+        self.laneCameraSender = messageHandlerSender(self.queuesList, laneCamera)
+        
+        # Counter for lane camera (send every 3rd frame to reduce overhead)
+        self.lane_frame_counter = 0
+        self.lane_frame_skip = 2  # Send every 3rd frame (~10 FPS for lane detection)
 
         self.subscribe()
         self._init_camera()
@@ -122,24 +128,39 @@ class threadCamera(ThreadWithStop):
 
         try:
             mainRequest = self.camera.capture_array("main")
-            serialRequest = self.camera.capture_array("lores")  # Will capture an array that can be used by OpenCV library
+            loresRequest = self.camera.capture_array("lores")  # 640x480 YUV420 for lane detection
 
             if self.recording == True:
                 self.video_writer.write(mainRequest) # type: ignore
 
-            serialRequest = cv2.cvtColor(serialRequest, cv2.COLOR_YUV2BGR_I420) # type: ignore
+            # Convert lores to BGR for both serial and lane detection
+            bgrFrame = cv2.cvtColor(loresRequest, cv2.COLOR_YUV2BGR_I420) # type: ignore
 
-            _, mainEncodedImg = cv2.imencode(".jpg", mainRequest) # type: ignore
-            _, serialEncodedImg = cv2.imencode(".jpg", serialRequest) # type: ignore
-
-            mainEncodedImageData = base64.b64encode(mainEncodedImg).decode("utf-8") # type: ignore
+            # Serial camera - base64 encoded JPEG (for dashboard)
+            _, serialEncodedImg = cv2.imencode(".jpg", bgrFrame) # type: ignore
             serialEncodedImageData = base64.b64encode(serialEncodedImg).decode("utf-8") # type: ignore
+            
+            # Main camera - base64 encoded JPEG (for dashboard)
+            _, mainEncodedImg = cv2.imencode(".jpg", mainRequest) # type: ignore
+            mainEncodedImageData = base64.b64encode(mainEncodedImg).decode("utf-8") # type: ignore
 
             if self._blocker.is_set():
                 return
 
             self.mainCameraSender.send(mainEncodedImageData)
             self.serialCameraSender.send(serialEncodedImageData)
+            
+            # Lane camera - raw bytes for low-latency processing (every Nth frame)
+            self.lane_frame_counter += 1
+            if self.lane_frame_counter > self.lane_frame_skip:
+                self.lane_frame_counter = 0
+                # Send frame shape + raw bytes
+                laneData = {
+                    "shape": bgrFrame.shape,
+                    "dtype": str(bgrFrame.dtype),
+                    "data": bgrFrame.tobytes()
+                }
+                self.laneCameraSender.send(laneData)
         except Exception as e:
             print(f"\033[1;97m[ Camera ] :\033[0m \033[1;91mERROR\033[0m - {e}")
 
@@ -168,7 +189,7 @@ class threadCamera(ThreadWithStop):
                 buffer_count=1,
                 queue=False,
                 main={"format": "RGB888", "size": (2048, 1080)},
-                lores={"size": (512, 270)},
+                lores={"format": "YUV420", "size": (640, 480)},  # Lane detection stream
                 encode="lores",
             )
             self.camera.configure(config) # type: ignore

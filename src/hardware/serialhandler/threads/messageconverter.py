@@ -48,6 +48,7 @@ class MessageConverter:
         | 'ENIMU'   : [ ['activate' ],               [int],                          [False]                ] - Activate IMU -
         | 'STS '    : [ ["speed", "time", "steer"]   [int, int, int]                 [False]                ] - Set a speed a timer and a steering angle -
         | 'KL'      : [ ['f_mode'],                  [int],                          [False]                ] - Enable/Diasble functions -
+        | 'STOPLINE': [ ['activate'],                [int],                          [False]                ] - Activate stopLine -
     """
 
     commands = {
@@ -63,7 +64,8 @@ class MessageConverter:
         "imu": [["activate"], [1], [False]],
         "vcd": [["speed", "steer", "time"], [3, 3, 3], [False]],
         "vcdCalib": [["speed", "steer", "time"], [3, 3, 3], [False]],
-        "kl": [["mode"], [2], [False]]
+        "kl": [["mode"], [2], [False]],
+        "stopLine": [["activate"], [1], [True]]
     }
     """ The 'commands' attribute is a dictionary, which contains key word and the acceptable format for each action type. """
 
