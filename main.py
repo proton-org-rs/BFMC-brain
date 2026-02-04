@@ -64,6 +64,7 @@ from src.hardware.camera.processCamera import processCamera
 from src.hardware.serialhandler.processSerialHandler import processSerialHandler
 from src.data.Semaphores.processSemaphores import processSemaphores
 from src.data.TrafficCommunication.processTrafficCommunication import processTrafficCommunication
+from src.AutonomousDriving.processAutonomousDriving import processAutonomousDriving as ProcessAutonomousDriving
 from src.utils.messages.messageHandlerSubscriber import messageHandlerSubscriber
 from src.utils.messages.allMessages import StateChange
 from src.statemachine.stateMachine import StateMachine
@@ -153,11 +154,15 @@ processSemaphore = processSemaphores(queueList, logging, semaphore_ready, debugg
 traffic_com_ready = Event()
 processTrafficCom = processTrafficCommunication(queueList, logging, 3, traffic_com_ready, debugging = False)
 
+# Initializing autonomous driving (not started by default, managed dynamically)
+autonomous_driving_ready = Event()
+processAutonomousDriving = None  # Will be created by manage_process_life when AUTO mode is activated
+
 # Initializing serial connection NUCLEO - > PI
 serial_handler_ready = Event()
 processSerialHandler = processSerialHandler(queueList, logging, serial_handler_ready, dashboard_ready, debugging = False)
 
-# Adding all processes to the list
+# Adding all processes to the list (NOTE: processAutonomousDriving NOT added here - managed dynamically)
 allProcesses.extend([processCamera, processSemaphore, processTrafficCom, processSerialHandler, processDashboard])
 allEvents.extend([camera_ready, semaphore_ready, traffic_com_ready, serial_handler_ready, dashboard_ready])
 
@@ -191,9 +196,11 @@ try:
         if message is not None:
             modeDictSemaphore = SystemMode[message].value["semaphore"]["process"]
             modeDictTrafficCom = SystemMode[message].value["traffic_com"]["process"]
+            modeDictAutonomousDriving = SystemMode[message].value["autonomous_driving"]["process"]
 
             processSemaphore = manage_process_life(processSemaphores, processSemaphore, [queueList, logging, semaphore_ready, False], modeDictSemaphore["enabled"], allProcesses)
             processTrafficCom = manage_process_life(processTrafficCommunication, processTrafficCom, [queueList, logging, 3, traffic_com_ready, False], modeDictTrafficCom["enabled"], allProcesses)
+            processAutonomousDriving = manage_process_life(ProcessAutonomousDriving, processAutonomousDriving, [queueList, logging, autonomous_driving_ready, False], modeDictAutonomousDriving["enabled"], allProcesses)
 
         blocker.wait(0.1)
 

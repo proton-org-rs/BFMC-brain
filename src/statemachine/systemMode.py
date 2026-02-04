@@ -55,6 +55,11 @@ class SystemMode(Enum):
             "process": {
                 "enabled": False,
             }
+        },
+        "autonomous_driving": {
+            "process": {
+                "enabled": False,
+            }
         }
     }
 
@@ -62,7 +67,7 @@ class SystemMode(Enum):
         "mode": "auto",
         "camera": {
             "process": {
-                "enabled": False,
+                "enabled": True,
             },
             "thread": {
                 "resolution": "480p",
@@ -81,6 +86,11 @@ class SystemMode(Enum):
         "traffic_com": {
             "process": {
                 "enabled": False,
+            }
+        },
+        "autonomous_driving": {
+            "process": {
+                "enabled": True,
             }
         }
     }
@@ -106,6 +116,11 @@ class SystemMode(Enum):
             }
         },
         "traffic_com": {
+            "process": {
+                "enabled": False,
+            }
+        },
+        "autonomous_driving": {
             "process": {
                 "enabled": False,
             }
@@ -136,6 +151,11 @@ class SystemMode(Enum):
             "process": {
                 "enabled": True,
             }
+        },
+        "autonomous_driving": {
+            "process": {
+                "enabled": False,
+            }
         }
     }
 
@@ -160,6 +180,11 @@ class SystemMode(Enum):
             }
         },
         "traffic_com": {
+            "process": {
+                "enabled": False,
+            }
+        },
+        "autonomous_driving": {
             "process": {
                 "enabled": False,
             }
