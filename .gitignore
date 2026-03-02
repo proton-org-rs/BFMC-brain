@@ -238,3 +238,14 @@ Desktop.ini
 # GITKEEP - čuvaj prazne direktorijume
 # ============================================================================
 !.gitkeep
+
+
+src/tests/*.md
+
+src/dashboard/frontend/.angular/cache/18.2.9/dashboard/.tsbuildinfo
+src/dashboard/frontend/.angular/cache/18.2.9/dashboard/vite/deps/_metadata.json
+src/dashboard/frontend/src/app/webSocket/web-socket.service.ts
+src/dashboard/frontend/src/app/webSocket/web-socket.service.ts
+*.ps1
+*.sh
+*/.angular

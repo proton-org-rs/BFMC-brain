@@ -37,9 +37,15 @@ nm_state() { nmcli -t -f STATE g 2>/dev/null || echo unknown; }
 dev_state() { nmcli -t -f GENERAL.STATE device show "$IFACE" 2>/dev/null | cut -d: -f2 || true; }
 
 check_wifi_state() {
-  local s1 s2
-  s1=$(nm_state); sleep 1; s2=$(nm_state)
-  [[ "$s1" == "connected" && "$s2" == "connected" ]] && echo connected || echo disconnected
+  local state
+  state=$(nmcli -t -f GENERAL.STATE device show "$IFACE" 2>/dev/null | cut -d: -f2)
+
+  # 100 = connected
+  if [[ "$state" == "100 (connected)" ]]; then
+    echo connected
+  else
+    echo disconnected
+  fi
 }
 
 wait_for_client() {
