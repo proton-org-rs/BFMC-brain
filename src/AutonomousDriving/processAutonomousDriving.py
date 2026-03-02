@@ -31,7 +31,7 @@ if __name__ == "__main__":
     sys.path.insert(0, "../../..")
 
 from src.templates.workerprocess import WorkerProcess
-from src.data.AutonomousDriving.threads.threadAutonomousDriving import threadAutonomousDriving
+from src.AutonomousDriving.threads.threadAutonomousDriving import threadAutonomousDriving
 
 
 class processAutonomousDriving(WorkerProcess):
