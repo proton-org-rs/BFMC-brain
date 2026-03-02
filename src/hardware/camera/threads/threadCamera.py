@@ -76,6 +76,10 @@ class threadCamera(ThreadWithStop):
         self.lane_frame_counter = 0
         self.lane_frame_skip = 2  # Send every 3rd frame (~10 FPS for lane detection)
 
+        # Timer tracking for proper cleanup
+        self.queue_sending_timer = None
+        self.configs_timer = None
+
         self.subscribe()
         self._init_camera()
         self.queue_sending()
@@ -94,7 +98,8 @@ class threadCamera(ThreadWithStop):
         if self._blocker.is_set():
             return
         self.recordingSender.send(self.recording)
-        threading.Timer(1, self.queue_sending).start()
+        self.queue_sending_timer = threading.Timer(1, self.queue_sending)
+        self.queue_sending_timer.start()
 
     # ================================ RUN ================================================
     def thread_work(self):
@@ -201,10 +206,21 @@ class threadCamera(ThreadWithStop):
 
     # =============================== STOP ================================================
     def stop(self):
+        # Cancel background timers first to prevent race conditions
+        if self.queue_sending_timer is not None:
+            self.queue_sending_timer.cancel()
+        if self.configs_timer is not None:
+            self.configs_timer.cancel()
+        
+        # Release video writer if recording
         if self.recording and self.video_writer:
             self.video_writer.release() # type: ignore
+        
+        # Stop camera
         if self.camera is not None:
             self.camera.stop()
+        
+        # Call parent stop
         super(threadCamera, self).stop()
 
     # =============================== CONFIG ==============================================
@@ -234,4 +250,5 @@ class threadCamera(ThreadWithStop):
                     "Contrast": max(0.0, min(32.0, float(message))), # type: ignore
                 }
             )
-        threading.Timer(1, self.configs).start()
+        self.configs_timer = threading.Timer(1, self.configs)
+        self.configs_timer.start()
