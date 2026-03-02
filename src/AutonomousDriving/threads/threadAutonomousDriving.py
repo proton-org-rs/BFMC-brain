@@ -46,8 +46,8 @@ from src.utils.messages.allMessages import (
 )
 
 # Import helper modules
-from src.data.AutonomousDriving.threads.laneDetection import LaneDetection
-from src.data.AutonomousDriving.threads.irSensorHandler import IRSensorHandler
+from src.AutonomousDriving.threads.laneDetection import LaneDetection
+from src.AutonomousDriving.threads.irSensorHandler import IRSensorHandler
 
 
 class threadAutonomousDriving(ThreadWithStop):
