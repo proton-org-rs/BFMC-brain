@@ -177,23 +177,30 @@ class threadAutonomousDriving(ThreadWithStop):
         """Stop autonomous driving and cleanup."""
         self.logger.info("[AutonomousDriving] Stopping autonomous driving...")
         
-        # Stop the car first
-        self.speed_sender.send("0")
-        self.is_driving = False
-        time.sleep(0.1)
-        
-        # Disable engine
-        self.klem_sender.send("0")
-        
-        # Stop IR sensor handler
+        # 1. Stop camera/lane detection FIRST to prevent new steering commands
+        if self.lane_detection is not None:
+            self.logger.info("[AutonomousDriving] Stopping lane detection...")
+            self.lane_detection.stop()
+            self.lane_detection = None
+            self.logger.info("[AutonomousDriving] ✓ Lane detection stopped")
+
+        # 2. Stop IR sensor handler
         if self.ir_sensor is not None:
             self.ir_sensor.stop()
             self.ir_sensor = None
+
+        # 3. Stop the car - brake, zero speed and steer
+        self.brake_sender.send("0")
+        self.speed_sender.send("0")
+        self.steer_sender.send("0")
+        self.is_driving = False
+
+        # 4. Give serial handler time to flush commands to NUCLEO
+        time.sleep(0.3)
         
-        # Stop lane detection (camera)
-        if self.lane_detection is not None:
-            self.lane_detection.stop()
-            self.lane_detection = None
+        # 5. Disable engine (KL=0)
+        self.klem_sender.send("0")
+        time.sleep(0.1)
         
         self.logger.info("[AutonomousDriving] ✓ Autonomous driving stopped")
 
@@ -236,6 +243,7 @@ class threadAutonomousDriving(ThreadWithStop):
         if self.initialized:
             self.stop_autonomous_driving()
             self.initialized = False
+            # removed broken self.kl line
         
         super(threadAutonomousDriving, self).stop()
         self.logger.info("[AutonomousDriving] Thread stopped")
