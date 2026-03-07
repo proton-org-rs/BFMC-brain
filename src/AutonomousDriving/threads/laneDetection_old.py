@@ -286,8 +286,8 @@ class LaneDetection:
         self.prev_x_right = self.W * 0.9
         self.laneWidth = self.W * 0.6
         
-        # Controller (aggressive gains to reach max steering during turns)
-        self.controller = LaneController(Kp=2.5, Kd=0.1, Kt=2.0)
+        # Controller
+        self.controller = LaneController(Kp=2, Kd=0.1, Kt=1)
         self.t_prev = time.time()
         self.last_steering = 0
         
@@ -446,12 +446,12 @@ class LaneDetection:
                 e = 0
                 theta = 0
             elif x_left is None and x_right is not None:
-                e = (x_right - self.laneWidth/2) - xc
+                e = (x_right - self.laneWidth) / 2 - xc
                 theta = angle_right
                 self.prev_angle_right = angle_right
                 self.prev_x_right = x_right
             elif x_left is not None and x_right is None:
-                e = (x_left + self.laneWidth/2) - xc
+                e = (x_left + self.laneWidth) / 2 - xc
                 theta = angle_left
                 self.prev_x_left = x_left
                 self.prev_angle_left = angle_left
@@ -463,8 +463,8 @@ class LaneDetection:
                 self.prev_x_right = x_right
                 self.prev_x_left = x_left
             
-            # Normalize error (invert sign for correct steering direction)
-            en = -e / (self.W / 2)
+            # Normalize error
+            en = e / (self.W / 2)
             
             # Calculate control signal
             t = time.time()

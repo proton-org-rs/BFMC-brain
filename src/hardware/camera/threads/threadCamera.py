@@ -72,9 +72,9 @@ class threadCamera(ThreadWithStop):
         self.serialCameraSender = messageHandlerSender(self.queuesList, serialCamera)
         self.laneCameraSender = messageHandlerSender(self.queuesList, laneCamera)
         
-        # Counter for lane camera (send every 3rd frame to reduce overhead)
+        # Counter for lane camera (send every frame for responsive line following)
         self.lane_frame_counter = 0
-        self.lane_frame_skip = 2  # Send every 3rd frame (~10 FPS for lane detection)
+        self.lane_frame_skip = 0  # Send every frame (~15 FPS for line detection)
 
         # Timer tracking for proper cleanup
         self.queue_sending_timer = None
@@ -149,11 +149,12 @@ class threadCamera(ThreadWithStop):
             _, mainEncodedImg = cv2.imencode(".jpg", mainRequest) # type: ignore
             mainEncodedImageData = base64.b64encode(mainEncodedImg).decode("utf-8") # type: ignore
 
-            if self._blocker.is_set():
-                return
-
+            # Send to dashboard (even if paused, so the dashboard shows the live view)
             self.mainCameraSender.send(mainEncodedImageData)
             self.serialCameraSender.send(serialEncodedImageData)
+
+            if self._blocker.is_set():
+                return
             
             # Lane camera - raw bytes for low-latency processing (every Nth frame)
             self.lane_frame_counter += 1

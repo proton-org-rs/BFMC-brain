@@ -32,7 +32,7 @@ sys.path.append('.')
 
 from src.gateway.processGateway import processGateway
 from src.hardware.serialhandler.processSerialHandler import processSerialHandler
-from src.data.AutonomousDriving.processAutonomousDriving import processAutonomousDriving
+from src.AutonomousDriving.processAutonomousDriving import processAutonomousDriving
 from src.utils.messages.messageHandlerSender import messageHandlerSender
 from src.utils.messages.allMessages import Klem, SpeedMotor, Brake
 

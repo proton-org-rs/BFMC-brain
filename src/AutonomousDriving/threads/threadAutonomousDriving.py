@@ -76,7 +76,7 @@ class threadAutonomousDriving(ThreadWithStop):
         self.debugging = debugging
         
         # Configuration
-        self.target_speed = 100  # Default speed (can be changed)
+        self.target_speed = 150  # Default speed (can be changed)
         
         # Components (initialized in start)
         self.lane_detection = None
@@ -196,11 +196,11 @@ class threadAutonomousDriving(ThreadWithStop):
         self.is_driving = False
 
         # 4. Give serial handler time to flush commands to NUCLEO
-        time.sleep(0.3)
+        time.sleep(0.05)
         
-        # 5. Disable engine (KL=0)
-        self.klem_sender.send("0")
-        time.sleep(0.1)
+        # NOTE: Do NOT send KL=0 here. Engine state (KL) is managed by
+        # main.py during mode transitions to avoid disabling the engine
+        # for subsequent modes (MANUAL, LEGACY, etc.)
         
         self.logger.info("[AutonomousDriving] ✓ Autonomous driving stopped")
 

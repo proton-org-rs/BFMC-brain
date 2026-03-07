@@ -102,7 +102,7 @@ class SystemMode(Enum):
                 "enabled": True,
             },
             "thread": {
-                "resolution": "1080p",
+                "resolution": "480p",
             }
         },
         "serial_handler": {
@@ -134,7 +134,7 @@ class SystemMode(Enum):
                 "enabled": True,
             },
             "thread": {
-                "resolution": "1080p",
+                "resolution": "360p",
             }
         },
         "serial_handler": {
@@ -144,12 +144,12 @@ class SystemMode(Enum):
         },
         "semaphore": {
             "process": {
-                "enabled": True,
+                "enabled": False,
             }
         },
         "traffic_com": {
             "process": {
-                "enabled": True,
+                "enabled": False,
             }
         },
         "autonomous_driving": {

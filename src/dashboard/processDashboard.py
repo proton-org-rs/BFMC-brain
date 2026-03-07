@@ -107,7 +107,14 @@ class processDashboard(WorkerProcess):
 
         # setup flask and socketio
         self.app = Flask(__name__)
-        self.socketio = SocketIO(self.app, cors_allowed_origins="*", async_mode='eventlet')
+        self.socketio = SocketIO(
+            self.app,
+            cors_allowed_origins="*",
+            async_mode='eventlet',
+            ping_timeout=30,
+            ping_interval=15,
+            max_http_buffer_size=1_000_000,  # 1MB max per message
+        )
         CORS(self.app, supports_credentials=True)
 
         # calibration
@@ -127,11 +134,21 @@ class processDashboard(WorkerProcess):
         return os.path.join(base_path, 'src', 'utils', 'table_state.json')
     
 
+    # Messages that should NOT be subscribed to in the polling loop.
+    # serialCamera is handled in a dedicated green thread for rate limiting.
+    # laneCamera, mainCamera, LaneKeeping, Signal, StopLine are internal-only
+    # and not needed by the frontend dashboard.
+    _EXCLUDED_MESSAGES = {
+        "mainCamera", "Semaphores", "laneCamera",
+        "LaneKeeping", "Signal", "StopLine", "ShutDownSignal",
+        "serialCamera",
+    }
+
     def _initialize_messages(self):
         """Initialize message handling systems."""
         self.get_name_and_vals()
-        self.messagesAndVals.pop("mainCamera", None)
-        self.messagesAndVals.pop("Semaphores", None)
+        for name in list(self._EXCLUDED_MESSAGES):
+            self.messagesAndVals.pop(name, None)
         self.subscribe()
     
 
@@ -151,23 +168,28 @@ class processDashboard(WorkerProcess):
         eventlet.spawn(self.send_hardware_data_to_frontend)
         eventlet.spawn(self.send_heartbeat)
         eventlet.spawn(self.stream_console_logs)
+        eventlet.spawn(self.send_camera_frames)
 
     def stream_console_logs(self):
-        """Monitor the Log queue and emit messages to frontend."""
+        """Monitor the Log queue and emit messages to frontend.
+        Batches up to 20 messages per cycle to avoid flooding the WebSocket."""
         log_queue = self.queueList.get("Log")
         if not log_queue:
             return
 
         while self.running:
             try:
-                while not log_queue.empty():
-                    msg = log_queue.get_nowait()
-                    self.socketio.emit('console_log', {'data': msg})
-                    eventlet.sleep(0)
+                batch = []
+                while not log_queue.empty() and len(batch) < 20:
+                    batch.append(log_queue.get_nowait())
                 
-                eventlet.sleep(0.1)
+                if batch:
+                    # Send as a single batched message
+                    self.socketio.emit('console_log', {'data': '\n'.join(batch)})
+                
+                eventlet.sleep(0.5)  # 2 updates/sec max
             except queue.Empty:
-                eventlet.sleep(0.1)
+                eventlet.sleep(0.5)
             except Exception as e:
                 if self.debugging:
                     self.logger.error(f"Error streaming logs: {e}")
@@ -262,7 +284,10 @@ class processDashboard(WorkerProcess):
 
     def handle_driving_mode(self, dataDict):
         """Handle driving mode change."""
-        self.stateMachine.request_mode(f"dashboard_{dataDict['Value']}_button")
+        try:
+            self.stateMachine.request_mode(f"dashboard_{dataDict['Value']}_button")
+        except Exception as e:
+            print(f"\033[1;97m[ Dashboard ] :\033[0m \033[1;91mERROR\033[0m - Failed to change driving mode: {e}")
 
 
     def handle_calibration(self, dataDict, socketId):
@@ -336,9 +361,13 @@ class processDashboard(WorkerProcess):
 
     def update_hardware_data(self):
         """Monitor and update hardware metrics periodically."""
-        self.cpuCoreUsage = psutil.cpu_percent(interval=None, percpu=False)
-        self.memoryUsage = psutil.virtual_memory().percent
-        self.cpuTemperature = round(psutil.sensors_temperatures()['cpu_thermal'][0].current)
+        try:
+            self.cpuCoreUsage = psutil.cpu_percent(interval=None, percpu=False)
+            self.memoryUsage = psutil.virtual_memory().percent
+            self.cpuTemperature = round(psutil.sensors_temperatures()['cpu_thermal'][0].current)
+        except Exception as e:
+            if self.debugging:
+                self.logger.error(f"Error updating hardware data: {e}")
 
         eventlet.spawn_after(1, self.update_hardware_data)
 
@@ -366,21 +395,49 @@ class processDashboard(WorkerProcess):
 
 
     def send_continuous_messages(self):
-        """Process and send subscriber messages to the frontend."""
+        """Process and send subscriber messages to the frontend.
+        Polls at 300ms intervals to reduce eventlet loop pressure."""
         if not self.running:
             return
 
-        for msg, subscriber in self.messages.items():
-            resp = subscriber["obj"].receive()
-            if resp is not None:
-                if msg == "SerialConnectionState":
-                    self.serialConnected = resp
+        try:
+            for msg, subscriber in self.messages.items():
+                try:
+                    resp = subscriber["obj"].receive()
+                    if resp is not None:
+                        if msg == "SerialConnectionState":
+                            self.serialConnected = resp
 
-                self.socketio.emit(msg, {"value": resp})
+                        self.socketio.emit(msg, {"value": resp})
+                        if self.debugging:
+                            self.logger.info(f"{msg}: {resp}")
+                except Exception as e:
+                    if self.debugging:
+                        self.logger.error(f"Error processing message {msg}: {e}")
+        except Exception as e:
+            print(f"\033[1;97m[ Dashboard ] :\033[0m \033[1;91mERROR\033[0m - send_continuous_messages error: {e}")
+
+        eventlet.spawn_after(0.3, self.send_continuous_messages)
+
+
+    def send_camera_frames(self):
+        """Dedicated green thread for camera frame emission.
+        Rate-limited to ~5 FPS to prevent flooding the WebSocket."""
+        from src.utils.messages.allMessages import serialCamera as SerialCameraMsg
+        camera_subscriber = messageHandlerSubscriber(
+            self.queueList, SerialCameraMsg, "lastOnly", True
+        )
+
+        while self.running:
+            try:
+                frame = camera_subscriber.receive()
+                if frame is not None:
+                    self.socketio.emit('serialCamera', {'value': frame})
+                eventlet.sleep(0.2)  # ~5 FPS max
+            except Exception as e:
                 if self.debugging:
-                    self.logger.info(f"{msg}: {resp}")
-
-        eventlet.spawn_after(0.1, self.send_continuous_messages)
+                    self.logger.error(f"Error sending camera frame: {e}")
+                eventlet.sleep(1)
 
 
     def send_hardware_data_to_frontend(self):
