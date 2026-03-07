@@ -101,14 +101,14 @@ class threadAutonomousDriving(ThreadWithStop):
 
     # ======================================= MOTOR CONTROL ==========================================
     def _stop_car(self):
-        """Stop the car (called by IR sensor handler)."""
+        """Stop the car ."""
         self.logger.info("[AutonomousDriving] 🛑 Stopping car...")
         self.brake_sender.send("0")
         self.speed_sender.send("0")
         self.is_driving = False
 
     def _resume_car(self):
-        """Resume driving (called by IR sensor handler)."""
+        """Resume driving ."""
         self.logger.info(f"[AutonomousDriving] ▶ Resuming at speed {self.target_speed}")
         self.speed_sender.send(str(self.target_speed))
         self.is_driving = True
@@ -231,9 +231,12 @@ class threadAutonomousDriving(ThreadWithStop):
             
             # 2. If driving, get steering from lane detection
             if should_drive and self.is_driving:
-                steering = self.lane_detection.get_steering_angle()
+                steering, is_stop_line = self.lane_detection.get_steering_angle()
                 if steering is not None:
                     self._send_steering(steering)
+                if is_stop_line:
+                    self._stop_car()
+
                     
         except Exception as e:
             self.logger.error(f"[AutonomousDriving] Error in main loop: {e}", exc_info=True)

@@ -51,9 +51,16 @@ Usage:
     lane_detector.stop()
 """
 
+import sys
+import os
 import time
 import numpy as np
 import cv2
+import picamera2
+
+# Add parent directory to path for direct execution
+if __name__ == "__main__":
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
 from src.utils.messages.allMessages import laneCamera
 from src.utils.messages.messageHandlerSubscriber import messageHandlerSubscriber
@@ -96,7 +103,17 @@ class LaneController:
 
 
 # ===================================== IMAGE PROCESSING FUNCTIONS =====================================
-def warping(image):
+def stopLine(img,askewTreshold=10, lengthTreshold=50):
+    lines=hough_transform(img)
+    if lines is None:
+        return False
+    for line in lines:
+        x1,y1,x2,y2=line.reshape(4)
+        if abs(y1-y2)<askewTreshold and ((x1-x2)**2+(y1-y2)**2)**0.5 > lengthTreshold:
+            return True
+    return False
+
+def warping(image,debug_bgr=None):
     """
     Perspective transform to bird's eye view.
     
@@ -108,10 +125,10 @@ def warping(image):
     """
     h, w = image.shape[:2]
     src = np.float32([
-        [0.1*w, 0.25*h],   # TL
-        [0.9*w, 0.25*h],   # TR
-        [w, 0.65*h],       # BR
-        [0, 0.65*h],       # BL
+        [0.265*w, 0.25*h],   # TL
+        [0.735*w, 0.25*h],   # TR
+        [0.945*w, 0.9*h],       # BR
+        [0.055*w, 0.9*h],       # BL
     ])
     m = int(0.15*w)  # margin
     dst = np.float32([
@@ -125,7 +142,11 @@ def warping(image):
                               flags=cv2.INTER_NEAREST,
                               borderMode=cv2.BORDER_CONSTANT,
                               borderValue=0)
-    return bev
+    dbg = None
+    if debug_bgr is not None:
+        dbg = debug_bgr.copy()
+        cv2.polylines(dbg, [src.astype(np.int32)], True, (0,255,0), 2)
+    return bev,dbg
 
 
 def hough_transform(image):
@@ -161,7 +182,7 @@ def preProcessing(img):
     blur = cv2.GaussianBlur(gray, (3, 3), 0)
     sobelx = cv2.Sobel(blur, cv2.CV_16S, 0, 1, ksize=3)
     sobelx = np.abs(sobelx)
-    _, binary = cv2.threshold(sobelx, 60, 255, cv2.THRESH_BINARY)
+    _, binary = cv2.threshold(sobelx, 60, 255, cv2.THRESH_BINARY)  #STELUJE SE
     binary = binary.astype(np.uint8)
     return binary
 
@@ -238,6 +259,55 @@ def fitline_weighted_by_length(lines, dashedLength=40, k=0.05, n_min=2, n_max=25
     return float(vx[0]), float(vy[0]), float(x0[0]), float(y0[0]), isDashed
 
 
+def debugSetup():
+    """Standalone preview loop for testing lane preprocessing from this file."""
+    try:
+        camera = picamera2.Picamera2()
+    except RuntimeError as e:
+        msg = str(e)
+        if "Device or resource busy" in msg or "did not complete" in msg:
+            print("[LaneDetection] Camera is busy (already used by another process).")
+            print("[LaneDetection] Stop processCamera/threadCamera (or any camera app) and try again.")
+            return
+        raise
+
+    config = camera.create_preview_configuration(
+        buffer_count=1,
+        queue=False,
+        main={"format": "RGB888", "size": (640, 480)},
+    )
+    camera.configure(config)
+    camera.start()
+
+    try:
+        while True:
+            frame = camera.capture_array()
+            if frame is None:
+                continue
+
+            # Picamera2 gives RGB888 here; lane pipeline expects BGR.
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            lane_roi = frame[240:480, :]
+            lane_img = cv2.resize(lane_roi, (320, 240), interpolation=cv2.INTER_AREA)
+
+            binary = preProcessing(lane_img)
+            warped, dbg = warping(binary, lane_img)
+            warped = bev_preprocess(warped)
+
+            cv2.imshow("Lane Input", lane_img)
+            cv2.imshow("Lane Binary", binary)
+            cv2.imshow("Lane Warped", warped)
+            if dbg is not None:
+                cv2.imshow("Lane ROI", dbg)
+
+            key = cv2.waitKey(1) & 0xFF
+            if key in (27, ord("q")):
+                break
+    finally:
+        camera.stop()
+        cv2.destroyAllWindows()
+
+
 def saturate(u, u_max):
     """Saturate control signal to [-u_max, u_max]."""
     return max(-u_max, min(u, u_max))
@@ -284,7 +354,7 @@ class LaneDetection:
         self.prev_angle_right = 0
         self.prev_x_left = self.W * 0.1
         self.prev_x_right = self.W * 0.9
-        self.laneWidth = self.W * 0.6
+        self.laneWidth = self.W * 0.8
         
         # Controller (aggressive gains to reach max steering during turns)
         self.controller = LaneController(Kp=2.5, Kd=0.1, Kt=2.0)
@@ -380,7 +450,7 @@ class LaneDetection:
             binary = preProcessing(lane_img)
             
             # Warp to bird's eye view
-            warped_lane = warping(binary)
+            warped_lane, _ = warping(binary)
             warped_lane = bev_preprocess(warped_lane)
             
             h_warp, w_warp = warped_lane.shape[:2]
@@ -394,6 +464,9 @@ class LaneDetection:
                 lines_right[:, :, 0] += w_warp//2
                 lines_right[:, :, 2] += w_warp//2
             
+            is_stop_line = stopLine(warped_lane[h_warp//2:h_warp, :], askewTreshold=10, lengthTreshold=50)
+            
+
             # Fit left line
             angle_left = None
             x_left = None
@@ -410,9 +483,9 @@ class LaneDetection:
                 x_left = x0 + (h_warp*0.75 - y0) * (vx / vy)
                 
                 # Filter only extreme jumps (allow real lane changes)
-                if abs(angle_left - self.prev_angle_left) > 0.35:
+                if abs(angle_left - self.prev_angle_left) > 0.175:
                     angle_left = self.prev_angle_left
-                if abs(x_left - self.prev_x_left) > 100:
+                if abs(x_left - self.prev_x_left) > 50:
                     x_left = self.prev_x_left
             
             # Fit right line
@@ -431,9 +504,9 @@ class LaneDetection:
                 x_right = x0 + (h_warp*0.75 - y0) * (vx / vy)
                 
                 # Filter only extreme jumps (allow real lane changes)
-                if abs(angle_right - self.prev_angle_right) > 0.35:
+                if abs(angle_right - self.prev_angle_right) > 0.175:
                     angle_right = self.prev_angle_right
-                if abs(x_right - self.prev_x_right) > 100:
+                if abs(x_right - self.prev_x_right) > 50:
                     x_right = self.prev_x_right
             
             # Calculate error and angle
@@ -443,8 +516,8 @@ class LaneDetection:
             
             if x_left is None and x_right is None:
                 # No lines detected - keep going straight with decay
-                e = 0
-                theta = 0
+                e=(self.prev_x_left+self.prev_x_right)/2-xc  
+                theta=(self.prev_angle_left+self.prev_angle_right)/2
             elif x_left is None and x_right is not None:
                 e = (x_right - self.laneWidth/2) - xc
                 theta = angle_right
@@ -464,7 +537,7 @@ class LaneDetection:
                 self.prev_x_left = x_left
             
             # Normalize error (invert sign for correct steering direction)
-            en = -e / (self.W / 2)
+            en = e / (self.W / 2)
             
             # Calculate control signal
             t = time.time()
@@ -479,7 +552,7 @@ class LaneDetection:
             deg = int(round(u * 573, -1))  # *57.3 for rad to deg, *10 for scaling
             self.last_steering = deg
             
-            return deg, True
+            return deg, is_stop_line, True
             
         except Exception as e:
             self.logger.error(f"[LaneDetection] Frame processing error: {e}")
@@ -499,9 +572,12 @@ class LaneDetection:
         if frame is None:
             return self.last_steering
             
-        steering, success = self.process_frame(frame)
-        return steering
+        steering, is_stop_line, success = self.process_frame(frame)
+        return steering, is_stop_line
 
     def is_active(self):
         """Check if lane detection is currently active."""
         return self.is_running
+
+if __name__ == "__main__":
+    debugSetup()
