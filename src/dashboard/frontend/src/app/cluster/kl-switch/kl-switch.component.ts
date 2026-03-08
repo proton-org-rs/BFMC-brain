@@ -56,9 +56,8 @@ export class KlSwitchComponent implements OnInit, OnDestroy {
 
   ngOnInit()
   {
-    // Send KL 0 to backend when entering the website
-    this.clusterService.updateKL('0');
-    this.webSocketService.sendMessageToFlask(`{"Name": "Klem", "Value": "0"}`);
+    // Do not force KL state on page load. Keep current vehicle state until user changes it.
+    this.clusterService.updateKL(this.currentState);
     
     this.enableButtonSubscription = this.webSocketService.receiveEnableButton().subscribe(
       (message) => {

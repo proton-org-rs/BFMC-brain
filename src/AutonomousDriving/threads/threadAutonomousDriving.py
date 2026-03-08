@@ -74,18 +74,35 @@ class threadAutonomousDriving(ThreadWithStop):
         self.queueList = queueList
         self.logger = logger
         self.debugging = debugging
-        
+
         # Configuration
         self.target_speed = 150  # Default speed (can be changed)
         
         # Components (initialized in start)
         self.lane_detection = None
-        self.ir_sensor = None
+        #self.ir_sensor = None
         
         # State
         self.initialized = False
         self.is_driving = False
         self.last_steering = 0
+        self.toStop=False
+        self.redLight=False
+        self.yellowLight=False
+        self.greenLight=False
+        self.parkZone=False
+        self.highway=False
+        self.roundabout=False
+        self.crosswalk=False
+        self.stop_line_detected = False
+        self.needToPark=False
+        self.waiting=False
+        self.stop_start_time=0
+
+
+
+        self.stop_line_counter = 0
+        self.stop_line_confirm_frames = 2
         
         # Message handlers
         self._init_message_handlers()
@@ -103,7 +120,7 @@ class threadAutonomousDriving(ThreadWithStop):
     def _stop_car(self):
         """Stop the car ."""
         self.logger.info("[AutonomousDriving] 🛑 Stopping car...")
-        self.brake_sender.send("0")
+        #self.brake_sender.send("0")
         self.speed_sender.send("0")
         self.is_driving = False
 
@@ -135,20 +152,20 @@ class threadAutonomousDriving(ThreadWithStop):
         self.logger.info("[AutonomousDriving] ✓ Lane Detection ready")
         
         # 2. Initialize IR Sensor Handler
-        self.logger.info("[AutonomousDriving] [2/4] Initializing IR Sensor Handler...")
-        self.ir_sensor = IRSensorHandler(
-            self.queueList, 
-            self.logger,
-            stop_duration=3.0,
-            ignore_duration=5.0,
-            debugging=self.debugging
-        )
-        self.ir_sensor.set_callbacks(
-            on_stop=self._stop_car,
-            on_resume=self._resume_car
-        )
-        self.ir_sensor.start()
-        self.logger.info("[AutonomousDriving] ✓ IR Sensor Handler ready")
+        # self.logger.info("[AutonomousDriving] [2/4] Initializing IR Sensor Handler...")
+        # self.ir_sensor = IRSensorHandler(
+        #     self.queueList, 
+        #     self.logger,
+        #     stop_duration=3.0,
+        #     ignore_duration=5.0,
+        #     debugging=self.debugging
+        # )
+        # self.ir_sensor.set_callbacks(
+        #     on_stop=self._stop_car,
+        #     on_resume=self._resume_car
+        # )
+        # self.ir_sensor.start()
+        # self.logger.info("[AutonomousDriving] ✓ IR Sensor Handler ready")
         
         # 3. Enable engine
         self.logger.info("[AutonomousDriving] [3/4] Enabling engine (KL=30)...")
@@ -159,7 +176,7 @@ class threadAutonomousDriving(ThreadWithStop):
         # 4. Start driving
         self.logger.info("[AutonomousDriving] [4/4] Starting to drive...")
         self.steer_sender.send("0")
-        time.sleep(0.05)
+        time.sleep(0.1)
         self.speed_sender.send(str(self.target_speed))
         self.is_driving = True
         
@@ -185,9 +202,9 @@ class threadAutonomousDriving(ThreadWithStop):
             self.logger.info("[AutonomousDriving] ✓ Lane detection stopped")
 
         # 2. Stop IR sensor handler
-        if self.ir_sensor is not None:
-            self.ir_sensor.stop()
-            self.ir_sensor = None
+        # if self.ir_sensor is not None:
+        #     self.ir_sensor.stop()
+        #     self.ir_sensor = None
 
         # 3. Stop the car - brake, zero speed and steer
         self.brake_sender.send("0")
@@ -205,6 +222,16 @@ class threadAutonomousDriving(ThreadWithStop):
         self.logger.info("[AutonomousDriving] ✓ Autonomous driving stopped")
 
     # ======================================= MAIN LOOP ==========================================
+    def stop(self):
+        """Override stop to cleanup before stopping thread."""
+        if self.initialized:
+            self.stop_autonomous_driving()
+            self.initialized = False
+            # removed broken self.kl line
+        
+        super(threadAutonomousDriving, self).stop()
+        self.logger.info("[AutonomousDriving] Thread stopped")
+
     def thread_work(self):
         """
         Main thread work - called repeatedly.
@@ -223,33 +250,112 @@ class threadAutonomousDriving(ThreadWithStop):
                 self.logger.error("[AutonomousDriving] Initialization failed!")
                 time.sleep(1)
             return
-        
-        try:
-            # 1. Update IR sensor state machine
-            #    This returns False if we should stop (at stop line)
-            should_drive = self.ir_sensor.update()
-            
-            # 2. If driving, get steering from lane detection
-            if should_drive and self.is_driving:
-                steering, is_stop_line = self.lane_detection.get_steering_angle()
-                if steering is not None:
-                    self._send_steering(steering)
-                if is_stop_line:
-                    self._stop_car()
+        #kada se upali
+        else:
+            try:
+                if not self.waiting:
+                    steer,detection,self.stop_line_detected=self.lane_detection.get_drive_params()
+                   #steer=0
+                    #print(f"[AutonomousDriving] detekcija: {detection}")
+                    # if self.stop_line_detected:
+                    #     print(self.stop_line_detected)
+                    if detection:
+                        print(detection)
+                    if detection == "priority":
+                    #stanje=vozi
+                        pass
 
+                    elif detection == "crosswalk_blue":
+                    #stanje=cross (ako je cross i detektuje sonicni (cekaj da predje))
+                        pass
+
+                    elif detection == "stop": #and self.stop_line_detected:
+                    #stanje="stop"
+                        if not self.toStop:
+                            self.toStop=True
+                        
+
+                    elif detection == "parking":
+                    #stanje=parking (kada ga detektuje i ako je park ukljucen i nema nista sa strane hard kodovati parkiranje)
+                        pass
+
+                    elif detection == "highway_enter":
+                        if not self.highway:
+                            self.logger.info("[AutonomousDriving] 🛣️ Highway entrance detected, increasing speed!")
+                            self.set_speed(300)  # Increase speed for highway
+                            self.highway = True
+                        
+
+                    elif detection == "highway_exit":
+                    #stanje=vozi
+                        if self.highway:
+                            self.logger.info("[AutonomousDriving] 🛣️ Highway exit detected, restoring speed!")
+                            self.set_speed(150)  # Restore normal speed
+                            self.highway = False
+                        
+
+                    elif detection == "no_entry":
+                    #kulijana nece se desiti
+                        pass
+
+                    elif detection == "roundabout":
+                    #kulijana
+                        pass
+
+                    elif detection == "one_way":
+                    #kulijana
+                        pass
+
+                    elif detection == "red":
+                    #stanje=wait
+                        if not self.redLight: 
+                            self.logger.info("[AutonomousDriving] 🛑 RED LIGHT...")
+                            self.redLight = True
+                            self.yellowLight=False
+                            self.greenLight=False
+                            self._stop_car()
+
+                    elif detection == "yellow":
+                        if not self.yellowLight: 
+                            self.logger.info("[AutonomousDriving] 🟡 YELLOW LIGHT...")
+                            self.redLight = False
+                            self.yellowLight=True
+                            self.greenLight=False
+                            self._stop_car()
+                        
+                    elif detection == "green":
+                        if not self.greenLight:
+                            self.logger.info("[AutonomousDriving] 🟢 GREEN LIGHT...")
+                            self.redLight=False
+                            self.yellowLight=False
+                            self.greenLight=True
+                            self._resume_car()
+
+                    elif detection == "off":
+                    #uradi manuelnu proveru dal ej stvarno off (necemo sad
+                        pass
+
+                    if self.stop_line_detected and self.toStop:
+                        self.logger.info("[AutonomousDriving] 🛑 STOP LINE detected, stopping for 2 seconds...")
+                        self._stop_car()
+                        self.waiting = True
+                        self.stop_start_time = time.time()
+
+                    if self.is_driving:
+                        self._send_steering(steer)
+                else:
+                    # Check if we have been waiting long enough to resume
+                    if time.time() - self.stop_start_time >= 2:
+                        self.logger.info("[AutonomousDriving] ⏱️ Waited 2 seconds, resuming driving...")
+                        self._resume_car()
+                        self.waiting = False
+                        self.toStop=False
+                    self.lane_detection.drain_frame()
                     
-        except Exception as e:
-            self.logger.error(f"[AutonomousDriving] Error in main loop: {e}", exc_info=True)
+            except Exception as e:
+                print(f"[AutonomousDriving] Error in main loop: {e}", exc_info=True)
 
-    def stop(self):
-        """Override stop to cleanup before stopping thread."""
-        if self.initialized:
-            self.stop_autonomous_driving()
-            self.initialized = False
-            # removed broken self.kl line
-        
-        super(threadAutonomousDriving, self).stop()
-        self.logger.info("[AutonomousDriving] Thread stopped")
+    
 
     # ======================================= PUBLIC API ==========================================
     def set_speed(self, speed):

@@ -71,7 +71,7 @@ from src.statemachine.stateMachine import StateMachine
 from src.statemachine.systemMode import SystemMode
 
 # ------ New component imports starts here ------#
-
+from src.DecisionMaking.processDecisionMaking import processDecisionMaking as ProcessDecisionMaking
 
 # ------ New component imports ends here ------#
 
@@ -169,6 +169,12 @@ allEvents.extend([camera_ready, semaphore_ready, traffic_com_ready, serial_handl
 
 # ------ New component initialize starts here ------#
 
+# Initializing Decision Making (not started by default, managed dynamically with AUTO mode)
+import os
+graphml_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Competition_track_graph.graphml")
+decision_making_ready = Event()
+processDecisionMaking = None  # Will be created by manage_process_life when AUTO mode is activated
+
 # ------ New component initialize ends here ------#
 
 # ===================================== START PROCESSES ==================================
@@ -198,10 +204,12 @@ try:
             modeDictSemaphore = SystemMode[message].value["semaphore"]["process"]
             modeDictTrafficCom = SystemMode[message].value["traffic_com"]["process"]
             modeDictAutonomousDriving = SystemMode[message].value["autonomous_driving"]["process"]
+            modeDictDecisionMaking = SystemMode[message].value["decision_making"]["process"]
 
             processSemaphore = manage_process_life(processSemaphores, processSemaphore, [queueList, logging, semaphore_ready, False], modeDictSemaphore["enabled"], allProcesses)
             processTrafficCom = manage_process_life(processTrafficCommunication, processTrafficCom, [queueList, logging, 3, traffic_com_ready, False], modeDictTrafficCom["enabled"], allProcesses)
             processAutonomousDriving = manage_process_life(ProcessAutonomousDriving, processAutonomousDriving, [queueList, logging, autonomous_driving_ready, False], modeDictAutonomousDriving["enabled"], allProcesses)
+            processDecisionMaking = manage_process_life(ProcessDecisionMaking, processDecisionMaking, [queueList, logging, graphml_path, decision_making_ready, False], modeDictDecisionMaking["enabled"], allProcesses)
 
         blocker.wait(0.1)
 

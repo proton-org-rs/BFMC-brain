@@ -60,6 +60,11 @@ class SystemMode(Enum):
             "process": {
                 "enabled": False,
             }
+        },
+        "decision_making": {
+            "process": {
+                "enabled": False,
+            }
         }
     }
 
@@ -92,6 +97,11 @@ class SystemMode(Enum):
             "process": {
                 "enabled": True,
             }
+        },
+        "decision_making": {
+            "process": {
+                "enabled": False,
+            }
         }
     }
 
@@ -121,6 +131,11 @@ class SystemMode(Enum):
             }
         },
         "autonomous_driving": {
+            "process": {
+                "enabled": False,
+            }
+        },
+        "decision_making": {
             "process": {
                 "enabled": False,
             }
@@ -156,6 +171,11 @@ class SystemMode(Enum):
             "process": {
                 "enabled": False,
             }
+        },
+        "decision_making": {
+            "process": {
+                "enabled": False,
+            }
         }
     }
 
@@ -185,6 +205,11 @@ class SystemMode(Enum):
             }
         },
         "autonomous_driving": {
+            "process": {
+                "enabled": False,
+            }
+        },
+        "decision_making": {
             "process": {
                 "enabled": False,
             }

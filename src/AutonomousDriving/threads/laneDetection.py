@@ -57,6 +57,9 @@ import time
 import numpy as np
 import cv2
 import picamera2
+from ultralytics import YOLO
+from collections import deque, Counter
+
 
 # Add parent directory to path for direct execution
 if __name__ == "__main__":
@@ -70,7 +73,7 @@ from src.utils.messages.messageHandlerSubscriber import messageHandlerSubscriber
 class LaneController:
     """PD + theta controller for lane keeping."""
     
-    def __init__(self, Kp=2.0, Kd=0.1, Kt=1.0):
+    def __init__(self, Kp, Kd, Kt):
         """
         Initialize the lane controller.
         
@@ -103,7 +106,46 @@ class LaneController:
 
 
 # ===================================== IMAGE PROCESSING FUNCTIONS =====================================
-def stopLine(img,askewTreshold=10, lengthTreshold=50):
+def get_largest_detection(result, min_conf=0.25,min_area=100):
+    best = None
+    best_area = 0.0
+
+    for b in result.boxes:
+        conf = float(b.conf[0])
+        if conf < min_conf:
+            continue
+
+        x1, y1, x2, y2 = b.xyxy[0].tolist()
+        area = max(0.0, (x2 - x1)) * max(0.0, (y2 - y1))
+
+        if area < min_area:
+            continue
+
+        if area > best_area:
+            cls = int(b.cls[0])
+            best = {
+                "label": result.names[cls],
+                "conf": conf,
+                "xyxy": (x1, y1, x2, y2),
+                "area": area
+            }
+            best_area = area
+
+    return best
+
+def stable_label(history, k=3):
+    """
+    vraća label ako se pojavio bar k puta u poslednjih N,
+    inače None
+    """
+    c = Counter([x for x in history if x is not None])
+    if not c:
+        return None
+    label, cnt = c.most_common(1)[0]
+    return label if cnt >= k else None
+
+
+def stopLine(img,askewTreshold=40,lengthTreshold=160):
     lines=hough_transform(img)
     if lines is None:
         return False
@@ -125,12 +167,12 @@ def warping(image,debug_bgr=None):
     """
     h, w = image.shape[:2]
     src = np.float32([
-        [0.265*w, 0.25*h],   # TL
-        [0.735*w, 0.25*h],   # TR
-        [0.945*w, 0.9*h],       # BR
-        [0.055*w, 0.9*h],       # BL
+        [0.15*w, 0.25*h],   # TL
+        [0.88*w, 0.25*h],   # TR
+        [1*w, 0.8*h],     # BR
+        [0*w, 0.8*h],       # BL
     ])
-    m = int(0.15*w)  # margin
+    m = int(0.18*w)  # margin
     dst = np.float32([
         [m, 0],       # TL
         [w-m, 0],     # TR
@@ -179,15 +221,15 @@ def preProcessing(img):
         binary: Binary edge image
     """
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    blur = cv2.GaussianBlur(gray, (3, 3), 0)
+    blur = cv2.GaussianBlur(gray, (3, 3), 1)
     sobelx = cv2.Sobel(blur, cv2.CV_16S, 0, 1, ksize=3)
     sobelx = np.abs(sobelx)
-    _, binary = cv2.threshold(sobelx, 60, 255, cv2.THRESH_BINARY)  #STELUJE SE
+    _, binary = cv2.threshold(sobelx, 55, 255, cv2.THRESH_BINARY)  #STELUJE SE
     binary = binary.astype(np.uint8)
     return binary
 
 
-def bev_preprocess(bev):
+def bev_postprocess(bev):
     """
     Morphological preprocessing on bird's eye view.
     
@@ -199,7 +241,7 @@ def bev_preprocess(bev):
     """
     bev = cv2.morphologyEx(bev, cv2.MORPH_CLOSE,
                            cv2.getStructuringElement(cv2.MORPH_RECT, (15, 15)),
-                           iterations=1)
+                           iterations=2)
     return bev
 
 
@@ -278,6 +320,17 @@ def debugSetup():
     )
     camera.configure(config)
     camera.start()
+    model = None
+    model_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "best2.pt")
+    try:
+        if not os.path.exists(model_path):
+            print(f"[LaneDetection] Model file not found: {model_path}")
+        else:
+            model = YOLO(model_path)
+            print(f"[LaneDetection] YOLO loaded: {model_path}")
+    except Exception as e:
+        print(f"[LaneDetection] YOLO load failed: {e}")
+        model = None
 
     try:
         while True:
@@ -286,19 +339,24 @@ def debugSetup():
                 continue
 
             # Picamera2 gives RGB888 here; lane pipeline expects BGR.
-            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            #frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
             lane_roi = frame[240:480, :]
             lane_img = cv2.resize(lane_roi, (320, 240), interpolation=cv2.INTER_AREA)
 
             binary = preProcessing(lane_img)
             warped, dbg = warping(binary, lane_img)
-            warped = bev_preprocess(warped)
+            #warped = bev_postprocess(warped)
 
             cv2.imshow("Lane Input", lane_img)
             cv2.imshow("Lane Binary", binary)
             cv2.imshow("Lane Warped", warped)
             if dbg is not None:
                 cv2.imshow("Lane ROI", dbg)
+            results = model(frame, imgsz=320, conf=0.2)
+            # annotated = results[0].plot()
+            # cv2.imshow("detections", annotated)
+            # cv2.moveWindow("detections", 200, 200)
+            # cv2.waitKey(1)
 
             key = cv2.waitKey(1) & 0xFF
             if key in (27, ord("q")):
@@ -348,6 +406,7 @@ class LaneDetection:
         # Image dimensions (from laneCamera stream: 640x480)
         self.H = 480
         self.W = 640
+        self.xc=None
         
         # Lane detection state
         self.prev_angle_left = 0
@@ -355,9 +414,30 @@ class LaneDetection:
         self.prev_x_left = self.W * 0.1
         self.prev_x_right = self.W * 0.9
         self.laneWidth = self.W * 0.8
+        self.is_stop_line = False
+
+        #ai detection
+        self.model = None
+        model_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "best2.pt")
+        try:
+            if not os.path.exists(model_path):
+                self.logger.error(f"[LaneDetection] Model file not found: {model_path}")
+            else:
+                self.model = YOLO(model_path)
+                self.logger.info(f"[LaneDetection] YOLO loaded: {model_path}")
+        except Exception as e:
+            self.logger.error(f"[LaneDetection] YOLO load failed: {e}")
+            self.model = None
+        self.history = deque(maxlen=5)
+        self.current = None
+        self.hold = 0
+        self.HOLD_FRAMES = 4
+        self.sign_period = 1
+        self.last_sign_t = 0.0
         
-        # Controller (aggressive gains to reach max steering during turns)
-        self.controller = LaneController(Kp=2.5, Kd=0.1, Kt=2.0)
+        # Controller (moderate gains for stable lane keeping)
+        # Kt=3.5 balances lane centering with turn response
+        self.controller = LaneController(Kp=8, Kd=1, Kt=3)
         self.t_prev = time.time()
         self.last_steering = 0
         
@@ -451,7 +531,7 @@ class LaneDetection:
             
             # Warp to bird's eye view
             warped_lane, _ = warping(binary)
-            warped_lane = bev_preprocess(warped_lane)
+            warped_lane = bev_postprocess(warped_lane)
             
             h_warp, w_warp = warped_lane.shape[:2]
             
@@ -464,7 +544,10 @@ class LaneDetection:
                 lines_right[:, :, 0] += w_warp//2
                 lines_right[:, :, 2] += w_warp//2
             
-            is_stop_line = stopLine(warped_lane[h_warp//2:h_warp, :], askewTreshold=10, lengthTreshold=50)
+            # Avoid bottom-border artifacts: inspect a band in front of the car
+            # rather than the last few pixels at the image edge.
+            
+            self.is_stop_line = stopLine(warped_lane[200:240,])
             
 
             # Fit left line
@@ -508,9 +591,13 @@ class LaneDetection:
                     angle_right = self.prev_angle_right
                 if abs(x_right - self.prev_x_right) > 50:
                     x_right = self.prev_x_right
-            
+            if not self.xc:
+                if x_right and x_left:
+                    self.xc=(x_right+x_left)/2
+                else:
+                    self.xc=self.W/2
             # Calculate error and angle
-            xc = self.W / 2
+            xc=self.xc
             e = 0
             theta = 0
             
@@ -545,39 +632,73 @@ class LaneDetection:
             self.t_prev = t
             
             u = self.controller.step(en, theta, dt)
+            #u = u - 0.08  # Smaller left offset to avoid overcorrecting left
             u = saturate(u, np.deg2rad(25))
             
             # Convert to degrees (scaled for serial protocol)
             # Must be int, not float - Serial Handler expects int
             deg = int(round(u * 573, -1))  # *57.3 for rad to deg, *10 for scaling
             self.last_steering = deg
+            label_now=None
+            now = time.time()
+            if now - self.last_sign_t >= self.sign_period:
+                self.last_sign_t = now
+                sign_roi = frame[0:self.H//2, self.W//2:self.W]            # 640x288
+                results = self.model(sign_roi, imgsz=320, conf=0.5)
+
+                det=get_largest_detection(results[0],min_conf=0.4)
+                label_now = det["label"] if det else None
+
+                self.history.append(label_now)
+
+                label_stable = stable_label(self.history, k=3)
+
+
+                # if label_stable is not None:
+
+                #     self.current = label_stable
+                #     self.hold = self.HOLD_FRAMES
+
+                # else:
+
+                #     if self.hold > 0:
+                #         self.hold -= 1
+                #     else:
+                #         self.current = None
             
-            return deg, is_stop_line, True
+            return deg,label_now,self.is_stop_line
             
         except Exception as e:
-            self.logger.error(f"[LaneDetection] Frame processing error: {e}")
-            return self.last_steering, False
+            print(f"[LaneDetection] Frame processing error: {e}")
+            return self.last_steering, None, self.is_stop_line
 
-    def get_steering_angle(self):
+    def get_drive_params(self):
         """
-        Get the current steering angle based on lane detection.
+        Get the current drive parameters based on lane detection.
         
         Returns:
-            int: Steering angle in scaled degrees, or None if not running
+            tuple: (steering_angle, sign, stopline)
         """
         if not self.is_running:
             return None
             
         frame = self._get_frame()
         if frame is None:
-            return self.last_steering
+            return self.last_steering,None,None
             
-        steering, is_stop_line, success = self.process_frame(frame)
-        return steering, is_stop_line
+        steering, sign, stopline = self.process_frame(frame)
+        return steering, sign, stopline
 
     def is_active(self):
         """Check if lane detection is currently active."""
         return self.is_running
+
+    def drain_frame(self):
+        """
+        Read and discard latest frame to prevent laneCamera queue buildup.
+        """
+        _ = self._get_frame()
+        return True
 
 if __name__ == "__main__":
     debugSetup()

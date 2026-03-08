@@ -315,6 +315,69 @@ class SerialConnectionState(Enum):
     msgID = 3
     msgType = "bool"
 
+################################# From DecisionMaking ##################################
+class CurrentDrivingMode(Enum):
+    """Current driving mode published by the Decision Making component.
+    
+    msgValue format: "DRIVING_MODE:<MODE_NAME>" or "DRIVING_MODE:<MODE_NAME>|key=val,..."
+    Examples:
+        "DRIVING_MODE:LANE_FOLLOWING"
+        "DRIVING_MODE:ROUNDABOUT|source=sign"
+        "DRIVING_MODE:CROSSING|source=path_planning"
+        "DRIVING_MODE:OBJECT_ON_ROAD|object_type=PEDESTRIAN,distance=1.2"
+    """
+    Queue = "General"
+    Owner = "threadDecisionMaking"
+    msgID = 1
+    msgType = "str"
+
+class SignDetection(Enum):
+    """Traffic sign detection from camera/AI — consumed by Decision Making.
+    
+    msgValue format: "SIGN:<sign_type>:<confidence>"
+    Examples:
+        "SIGN:ROUNDABOUT:0.85"
+        "SIGN:CROSSING:0.92"
+        "SIGN:PEDESTRIAN_CROSSING:0.78"
+        "SIGN:TUNNEL:0.90"
+        "SIGN:HIGHWAY:0.88"
+        "SIGN:PARKING:0.95"
+        "SIGN:STOP:0.99"
+        "SIGN:NO_ENTRY:0.91"
+    """
+    Queue = "General"
+    Owner = "threadDecisionMaking"
+    msgID = 2
+    msgType = "str"
+
+class ObjectDetection(Enum):
+    """Object detection from camera/AI — consumed by Decision Making.
+    
+    msgValue format: "OBJECT:<object_type>:<distance_meters>"
+    Examples:
+        "OBJECT:PEDESTRIAN:1.5"
+        "OBJECT:CAR:3.0"
+        "OBJECT:OBSTACLE:0.8"
+    """
+    Queue = "General"
+    Owner = "threadDecisionMaking"
+    msgID = 3
+    msgType = "str"
+
+class TrafficLightDetection(Enum):
+    """Traffic light state detection — consumed by Decision Making.
+    
+    msgValue format: "TRAFFIC_LIGHT:<color>"
+    Examples:
+        "TRAFFIC_LIGHT:RED"
+        "TRAFFIC_LIGHT:YELLOW"
+        "TRAFFIC_LIGHT:GREEN"
+    """
+    Queue = "General"
+    Owner = "threadDecisionMaking"
+    msgID = 4
+    msgType = "str"
+
 ################################# From StateMachine ##################################
 class StateChange(Enum):
     Queue = "Critical"
