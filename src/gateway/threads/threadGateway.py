@@ -102,13 +102,24 @@ class threadGateway(ThreadWithStop):
         Type = message["msgType"]
         Value = message["msgValue"]
         if (Owner, Id) in self.messageApproved:
+            broken = []
             for element in self.sendingList[Owner][Id]:
-                # We send a dictionary that contain the type of the message and message
-                self.sendingList[Owner][Id][element].send(
-                    {"Type": Type, "value": Value, "id": Id, "Owner": Owner}
-                )
-                if self.debugging:
-                    self.logger.warning(message)
+                try:
+                    # We send a dictionary that contain the type of the message and message
+                    self.sendingList[Owner][Id][element].send(
+                        {"Type": Type, "value": Value, "id": Id, "Owner": Owner}
+                    )
+                    if self.debugging:
+                        self.logger.warning(message)
+                except (BrokenPipeError, OSError) as e:
+                    print(f"\033[1;91m[Gateway] BROKEN PIPE to {element} for ({Owner},{Id}): {e}\033[0m")
+                    broken.append(element)
+                except Exception as e:
+                    print(f"\033[1;91m[Gateway] ERROR sending to {element} for ({Owner},{Id}): {e}\033[0m")
+                    broken.append(element)
+            for b in broken:
+                del self.sendingList[Owner][Id][b]
+                self.messageApproved.remove((Owner, Id))
 
     # ====================================================================================
 

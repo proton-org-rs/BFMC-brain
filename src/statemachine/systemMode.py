@@ -100,7 +100,7 @@ class SystemMode(Enum):
         },
         "decision_making": {
             "process": {
-                "enabled": False,
+                "enabled": True,
             }
         }
     }

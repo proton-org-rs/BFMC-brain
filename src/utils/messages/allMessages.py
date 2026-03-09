@@ -315,6 +315,18 @@ class SerialConnectionState(Enum):
     msgID = 3
     msgType = "bool"
 
+################################# From AutonomousDriving ##################################
+class DetectionEvent(Enum):
+    """Detection from YOLO/camera published by AD for DecisionMaking.
+    
+    Published every frame that has a YOLO detection or stop line.
+    msgValue: {"detection": "red"|"stop"|...|None, "stop_line": True|False}
+    """
+    Queue = "General"
+    Owner = "threadAutonomousDriving"
+    msgID = 1
+    msgType = "dict"
+
 ################################# From DecisionMaking ##################################
 class CurrentDrivingMode(Enum):
     """Current driving mode published by the Decision Making component.
@@ -376,6 +388,28 @@ class TrafficLightDetection(Enum):
     Queue = "General"
     Owner = "threadDecisionMaking"
     msgID = 4
+    msgType = "str"
+
+class SpeedCommand(Enum):
+    """Speed command from DecisionMaking to AutonomousDriving.
+    
+    DM sends target speed; AD sets SpeedMotor accordingly.
+    msgValue: "150", "300", etc.
+    """
+    Queue = "General"
+    Owner = "threadDecisionMaking"
+    msgID = 5
+    msgType = "str"
+
+class StopCommand(Enum):
+    """Stop/resume command from DecisionMaking to AutonomousDriving.
+    
+    DM tells AD when to stop or resume driving.
+    msgValue: "stop" or "resume"
+    """
+    Queue = "General"
+    Owner = "threadDecisionMaking"
+    msgID = 6
     msgType = "str"
 
 ################################# From StateMachine ##################################

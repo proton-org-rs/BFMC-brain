@@ -88,13 +88,17 @@ export class TableComponent implements OnInit {
     const existingItem = this.items.find(item => item.channel === channel);
 
     if (existingItem) {
-      existingItem.value = value !== null && value !== undefined ? String(value) : '';
+      existingItem.value = value !== null && value !== undefined
+        ? (typeof value === 'object' ? JSON.stringify(value) : String(value))
+        : '';
       existingItem.interval = interval;
 
       // Compare current value to initial value and mark as changed if necessary
       existingItem.hasChanged = existingItem.value !== existingItem.initialValue;
     } else {
-      const stringValue = value !== null && value !== undefined ? String(value) : '';
+      const stringValue = value !== null && value !== undefined
+        ? (typeof value === 'object' ? JSON.stringify(value) : String(value))
+        : '';
       this.items.push({ 
         channel, 
         value: stringValue, 

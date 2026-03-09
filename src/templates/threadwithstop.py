@@ -99,7 +99,12 @@ class ThreadWithStop(Thread):
             self.state_change_handler()
             
             # do the actual work
-            self.thread_work()
+            try:
+                self.thread_work()
+            except Exception as e:
+                print(f"\033[1;91m[{self.__class__.__name__}] UNHANDLED EXCEPTION in thread_work: {e}\033[0m")
+                import traceback
+                traceback.print_exc()
             
             # respect the pause duration if not paused
             if self._pause_event.is_set():

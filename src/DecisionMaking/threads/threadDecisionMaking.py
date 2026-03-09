@@ -1,37 +1,38 @@
 """
-Decision Making Thread
+Decision Making Thread — Planning & Intelligence Layer
 
-This is the main thread for autonomous driving with intelligent decision making.
-It replaces/enhances the basic logic from threadAutonomousDriving by adding:
-- Structured DrivingMode state machine (instead of scattered bool flags)
-- Path Planning integration (graph map awareness)
-- Clean mode transition logic with behaviors per mode
+This thread is the BRAIN of the autonomous driving system.
+It does NOT control motors or camera directly. Instead:
+- Receives DetectionEvent from AutonomousDriving (YOLO labels + stop line)
+- Manages the DrivingMode state machine (transitions between modes)
+- Sends high-level commands to AutonomousDriving (SpeedCommand, StopCommand)
+- Uses PathPlanning for map-aware navigation
 
-It works the same way as threadAutonomousDriving:
-1. Uses LaneDetection from AutonomousDriving to get steering + YOLO detections
-2. Controls the car directly via SpeedMotor / SteerMotor / Brake / Klem senders
-3. Handles stop lines, traffic lights, signs, highway, etc.
+Architecture (Master/Slave):
 
-Architecture:
-    ┌──────────────────────────────────────────────────────────────┐
-    │                    threadDecisionMaking                       │
+    ┌─────────────────────────────────────────────────────────────┐
+    │               DecisionMaking (Planner — this thread)         │
     │                                                              │
-    │  ┌────────────┐    ┌───────────────┐    ┌────────────────┐  │
-    │  │LaneDetection│───>│  DrivingMode  │───>│ Motor Control  │  │
-    │  │ (camera +   │    │  State Machine│    │ (speed, steer, │  │
-    │  │  YOLO det.) │    │  + Behaviors  │    │  brake, klem)  │  │
-    │  └────────────┘    └───────┬───────┘    └────────────────┘  │
-    │                            │                                 │
-    │                     ┌──────┴──────┐                          │
-    │                     │ PathPlanning │                          │
-    │                     │ + GraphMap   │                          │
-    │                     └─────────────┘                          │
+    │   DetectionEvent ──→ DrivingMode ──→ SpeedCommand/StopCommand│
+    │   (from AD)          State Machine    (to AD)                │
+    │                          │                                   │
+    │                    PathPlanning                               │
+    │                    + GraphMap                                 │
+    └──────────────┬──────────────────────────────────┬────────────┘
+                   │ subscribe                         │ publish
+                   ▲                                   ▼
+    ┌──────────────┴──────────────────────────────────┴────────────┐
+    │              AutonomousDriving (Executor)                     │
+    │                                                              │
+    │   Camera ──→ LaneDetection ──→ Steering (local)              │
+    │              YOLO ──→ DetectionEvent (publish)                │
+    │              SpeedCommand/StopCommand ──→ Motor Control       │
     └──────────────────────────────────────────────────────────────┘
 
-Detection labels from YOLO (LaneDetection.get_drive_params()):
-    "priority", "crosswalk_blue", "stop", "parking",
-    "highway_enter", "highway_exit", "no_entry", "roundabout",
-    "one_way", "red", "yellow", "green", "off"
+Communication:
+    AD → DM:  DetectionEvent  {"detection": "red"|None, "stop_line": True|False}
+    DM → AD:  SpeedCommand    "150", "300", etc.
+    DM → AD:  StopCommand     "stop" or "resume"
 """
 
 import time
@@ -39,13 +40,12 @@ from src.templates.threadwithstop import ThreadWithStop
 from src.utils.messages.messageHandlerSender import messageHandlerSender
 from src.utils.messages.messageHandlerSubscriber import messageHandlerSubscriber
 from src.utils.messages.allMessages import (
-    Klem, SpeedMotor, SteerMotor, Brake,
     CurrentDrivingMode,
     Location,
+    DetectionEvent,
+    SpeedCommand,
+    StopCommand,
 )
-
-# Reuse LaneDetection from AutonomousDriving (READ-ONLY import, no edits)
-from src.AutonomousDriving.threads.laneDetection import LaneDetection
 
 from src.DecisionMaking.DrivingModes.drivingMode import DrivingMode, DrivingModeContext
 from src.DecisionMaking.PathPlanning.pathPlanning import PathPlanning
@@ -53,19 +53,14 @@ from src.DecisionMaking.PathPlanning.pathPlanning import PathPlanning
 
 class threadDecisionMaking(ThreadWithStop):
     """
-    Main Decision Making thread with real vehicle control.
+    Decision Making planner thread.
 
-    Combines:
-    - LaneDetection (camera frames -> steering + YOLO sign detection)
-    - DrivingMode state machine (clean mode transitions)
-    - Motor control (speed / steer / brake / klem senders)
-    - PathPlanning (graph map for upcoming features)
-
-    This thread IS the brain of autonomous driving when DecisionMaking
-    process is active.
+    Receives detection events from AutonomousDriving and sends
+    high-level commands (speed, stop, resume) back to it.
+    Manages the DrivingMode state machine and PathPlanning.
 
     Args:
-        queueList:    Dictionary of message queues (inter-process communication).
+        queueList:    Dictionary of message queues.
         logger:       Logger for debug/info messages.
         graphml_path: Path to the competition track GraphML file.
         debugging:    Enable verbose debug logging.
@@ -74,11 +69,11 @@ class threadDecisionMaking(ThreadWithStop):
     # ─── Speed constants ──────────────────────────────────────────
     SPEED_NORMAL = 150
     SPEED_HIGHWAY = 300
-    SPEED_SLOW = 100      # for crosswalks, parking, roundabout…
+    SPEED_SLOW = 100
     SPEED_STOP = 0
 
     def __init__(self, queueList, logger, graphml_path, debugging=False):
-        super(threadDecisionMaking, self).__init__(pause=0.01)  # 10ms loop (same as AD)
+        super(threadDecisionMaking, self).__init__(pause=0.01)
         self.queueList = queueList
         self.logger = logger
         self.debugging = debugging
@@ -89,20 +84,13 @@ class threadDecisionMaking(ThreadWithStop):
         # ─── Path Planning ───────────────────────────────────────
         self.path_planning = PathPlanning(graphml_path, logger)
 
-        # ─── LaneDetection (will be created on first thread_work) ─
-        self.lane_detection = None
-
-        # ─── Vehicle state ───────────────────────────────────────
-        self.target_speed = self.SPEED_NORMAL
+        # ─── State ───────────────────────────────────────────────
         self.initialized = False
-        self.is_driving = False
-        self.last_steering = 0
 
-        # ─── Detection flags (mirroring AD logic) ────────────────
+        # Detection flags (same semantics as old AD)
         self.toStop = False
         self.waiting = False
         self.stop_start_time = 0
-        self.stop_line_detected = False
 
         # Traffic light flags
         self.redLight = False
@@ -112,11 +100,11 @@ class threadDecisionMaking(ThreadWithStop):
         # Road type flags
         self.highway = False
 
-        # ─── GPS/Localization ────────────────────────────────────
+        # GPS
         self._current_position = None
 
         # ─── Message handlers ────────────────────────────────────
-        self._init_message_handlers()
+        self._init_senders()
         self._init_subscribers()
 
         self._log("Decision Making thread initialized")
@@ -134,49 +122,22 @@ class threadDecisionMaking(ThreadWithStop):
 
     # ═══════════════════════════ MESSAGE HANDLERS ═════════════════════
 
-    def _init_message_handlers(self):
-        """Initialize motor-control senders (same as threadAutonomousDriving)."""
-        self.klem_sender = messageHandlerSender(self.queueList, Klem)
-        self.speed_sender = messageHandlerSender(self.queueList, SpeedMotor)
-        self.steer_sender = messageHandlerSender(self.queueList, SteerMotor)
-        self.brake_sender = messageHandlerSender(self.queueList, Brake)
-        # Driving mode publisher (for dashboard / other listeners)
+    def _init_senders(self):
+        """Senders: commands to AD + driving mode for dashboard."""
+        self.speed_command_sender = messageHandlerSender(self.queueList, SpeedCommand)
+        self.stop_command_sender = messageHandlerSender(self.queueList, StopCommand)
         self.driving_mode_sender = messageHandlerSender(self.queueList, CurrentDrivingMode)
 
     def _init_subscribers(self):
-        """Subscribe to GPS/localization updates."""
+        """Subscribe to detection events from AD and GPS updates."""
+        self.detection_subscriber = messageHandlerSubscriber(
+            self.queueList, DetectionEvent, "fifo", True
+        )
         self.location_subscriber = messageHandlerSubscriber(
             self.queueList, Location, "lastOnly", True
         )
 
-    # ═══════════════════════════ MOTOR CONTROL ════════════════════════
-
-    def _stop_car(self):
-        """Stop the car (speed=0)."""
-        self._log("Stopping car...")
-        self.speed_sender.send("0")
-        self.is_driving = False
-
-    def _resume_car(self):
-        """Resume driving at target_speed."""
-        self._log(f"Resuming at speed {self.target_speed}")
-        self.speed_sender.send(str(self.target_speed))
-        self.is_driving = True
-
-    def _send_steering(self, angle):
-        """Send steering only when changed."""
-        if angle != self.last_steering:
-            self.steer_sender.send(str(angle))
-            self.last_steering = angle
-
-    def _set_speed(self, speed):
-        """Change target speed and send immediately if driving."""
-        self.target_speed = speed
-        if self.is_driving:
-            self.speed_sender.send(str(speed))
-            self._log(f"Speed changed to {speed}")
-
-    # ═══════════════════════════ DRIVING MODE PUBLISH ═════════════════
+    # ═══════════════════════════ MODE MANAGEMENT ═════════════════════
 
     def _publish_mode(self, mode: DrivingMode, data: dict = None):
         """Publish current driving mode to message bus."""
@@ -187,81 +148,18 @@ class threadDecisionMaking(ThreadWithStop):
         self.driving_mode_sender.send(msg)
 
     def _transition_mode(self, new_mode: DrivingMode, data: dict = None):
-        """
-        Attempt a mode transition. Logs and publishes on change.
-
-        Returns True if the mode actually changed.
-        """
+        """Attempt a mode transition. Logs and publishes on change."""
         changed = self.mode_context.set_mode(new_mode, data)
         if changed:
-            prev_name = self.mode_context.previous_mode.name if self.mode_context.previous_mode else "None"
-            self._log(f"Mode: {prev_name} -> \033[1;96m{new_mode.name}\033[0m")
+            prev = self.mode_context.previous_mode.name if self.mode_context.previous_mode else "None"
+            self._log(f"Mode: {prev} -> \033[1;96m{new_mode.name}\033[0m")
             self._publish_mode(new_mode, data)
         return changed
-
-    # ═══════════════════════ INITIALIZATION ═══════════════════════════
-
-    def _start_driving(self) -> bool:
-        """Initialize lane detection, engine, and start driving."""
-        self._log("═══════════════════════════════════════")
-        self._log("Starting Decision Making Driving System...")
-        self._log("═══════════════════════════════════════")
-
-        # 1. Initialize Lane Detection (subscribes to camera frames)
-        self._log("[1/3] Initializing Lane Detection...")
-        self.lane_detection = LaneDetection(self.queueList, self.logger, self.debugging)
-        if not self.lane_detection.start():
-            self.logger.error("[DecisionMaking] Failed to start lane detection!")
-            return False
-        self._log("Lane Detection ready")
-
-        # 2. Enable engine (KL=30)
-        self._log("[2/3] Enabling engine (KL=30)...")
-        self.klem_sender.send("30")
-        time.sleep(0.1)
-        self._log("Engine enabled")
-
-        # 3. Start driving
-        self._log("[3/3] Starting to drive...")
-        self.steer_sender.send("0")
-        time.sleep(0.05)
-        self.is_driving = True
-        self._transition_mode(DrivingMode.LANE_FOLLOWING)
-
-        self._log("═══════════════════════════════════════")
-        self._log("DECISION MAKING DRIVING ACTIVE!")
-        self._log(f"  Speed: {self.target_speed}")
-        self._log("  Lane Detection: ACTIVE")
-        self._log("  DrivingMode: LANE_FOLLOWING")
-        self._log("═══════════════════════════════════════")
-        return True
-
-    def _stop_driving(self):
-        """Stop lane detection and motors."""
-        self._log("Stopping driving...")
-
-        # 1. Stop lane detection
-        if self.lane_detection is not None:
-            self.lane_detection.stop()
-            self.lane_detection = None
-            self._log("Lane detection stopped")
-
-        # 2. Stop the car
-        self.brake_sender.send("0")
-        self.speed_sender.send("0")
-        self.steer_sender.send("0")
-        self.is_driving = False
-        time.sleep(0.05)
-
-        self._log("Driving stopped")
 
     # ═══════════════════════ THREAD LIFECYCLE ═════════════════════════
 
     def stop(self):
-        """Override stop to cleanup before stopping thread."""
-        if self.initialized:
-            self._stop_driving()
-            self.initialized = False
+        """Override stop to cleanup."""
         super(threadDecisionMaking, self).stop()
         self._log("Thread stopped")
 
@@ -269,99 +167,86 @@ class threadDecisionMaking(ThreadWithStop):
 
     def thread_work(self):
         """
-        Main work cycle — mirrors the logic from threadAutonomousDriving
-        but routes everything through the DrivingMode state machine.
+        Main work cycle — receives detections from AD and sends commands.
 
         Flow:
-        1. Initialize on first call
-        2. If not waiting at stop line -> get detection + steering from LaneDetection
-        3. Handle detection -> transition DrivingMode
-        4. Execute behavior for current mode (stop/resume/speed change)
-        5. Send steering if driving
-        6. If waiting -> check timer, resume when done
+        1. Initialize on first call (no hardware — just logging)
+        2. Process all queued DetectionEvents from AD
+        3. Handle each detection → transition DrivingMode → send command
+        4. Manage stop line timer (2s wait → resume)
+        5. Update GPS for path planning
         """
-        # ─── First call: initialize ──────────────────────────────
+        # ─── First call: just mark as ready ──────────────────────
         if not self.initialized:
-            if self._start_driving():
-                self.initialized = True
-            else:
-                self.logger.error("[DecisionMaking] Initialization failed!")
-                time.sleep(1)
+            self._log("═══════════════════════════════════════")
+            self._log("Decision Making PLANNER active")
+            self._log("  Waiting for DetectionEvents from AD...")
+            self._log("  PathPlanning: loaded")
+            self._log("  DrivingMode: LANE_FOLLOWING")
+            self._log("═══════════════════════════════════════")
+            self._transition_mode(DrivingMode.LANE_FOLLOWING)
+            self.initialized = True
             return
 
+        try:
+            self._thread_work_inner()
+        except Exception as e:
+            self._log(f"CRASH in thread_work: {e}", "warning")
+            print(f"\033[1;91m[DecisionMaking] CRASH in thread_work: {e}\033[0m")
+            import traceback
+            traceback.print_exc()
+
+    def _thread_work_inner(self):
         # ─── Update GPS position for path planning ───────────────
         self._process_location()
 
-        # ─── Main driving logic ──────────────────────────────────
-        try:
-            if not self.waiting:
-                # Get steering + detection from LaneDetection (same as AD)
-                steer, detection, self.stop_line_detected = self.lane_detection.get_drive_params()
+        # ─── Process all queued detection events from AD (FIFO) ──
+        for _ in range(20):
+            msg = self.detection_subscriber.receive()
+            if msg is None:
+                break
 
-                if self.debugging:
-                    self._log(f"detection: {detection}, stop_line: {self.stop_line_detected}", "debug")
+            detection = msg.get("detection")
+            stop_line = msg.get("stop_line", False)
 
-                # ─── Handle detection ────────────────────────────
-                self._handle_detection(detection)
+            if self.debugging:
+                self._log(f"detection={detection}, stop_line={stop_line}", "debug")
 
-                # ─── Stop line + toStop check ────────────────────
-                if self.stop_line_detected and self.toStop:
-                    self._log("STOP LINE detected, stopping for 2 seconds...")
-                    self._stop_car()
-                    self.waiting = True
-                    self.stop_start_time = time.time()
-                    self._transition_mode(DrivingMode.STOP, {"source": "stop_line"})
+            # Handle detection → mode transition → command
+            self._handle_detection(detection)
 
-                # ─── Send steering if driving ────────────────────
-                if self.is_driving:
-                    self._send_steering(steer)
-            else:
-                # ─── Waiting at stop line ────────────────────────
-                if time.time() - self.stop_start_time >= 2:
-                    self._log("Waited 2 seconds, resuming driving...")
-                    self._resume_car()
-                    self.waiting = False
-                    self.toStop = False
-                    self._transition_mode(DrivingMode.LANE_FOLLOWING)
+            # Stop line check (armed by "stop" sign detection)
+            if stop_line and self.toStop and not self.waiting:
+                self._log("STOP LINE — commanding AD to stop for 2s")
+                self.stop_command_sender.send("stop")
+                self.waiting = True
+                self.stop_start_time = time.time()
+                self._transition_mode(DrivingMode.STOP, {"source": "stop_line"})
 
-                # Drain camera frames to keep the queue from backing up
-                if self.lane_detection is not None:
-                    self.lane_detection.drain_frame()
-
-        except Exception as e:
-            self.logger.error(f"[DecisionMaking] Error in main loop: {e}", exc_info=True)
+        # ─── Timer for stop line wait ────────────────────────────
+        if self.waiting:
+            if time.time() - self.stop_start_time >= 2:
+                self._log("2 seconds elapsed — commanding AD to resume")
+                self.stop_command_sender.send("resume")
+                self.waiting = False
+                self.toStop = False
+                self._transition_mode(DrivingMode.LANE_FOLLOWING)
 
     # ═══════════════════════ DETECTION HANDLER ════════════════════════
 
     def _handle_detection(self, detection):
         """
-        Handle a YOLO detection label from LaneDetection.
+        Handle a YOLO detection label received from AD.
 
-        This maps each detection string to a DrivingMode transition
-        and executes the corresponding behavior (speed change, stop, etc.).
-
-        Detection labels from the YOLO model:
-            "priority"       -> keep driving (LANE_FOLLOWING)
-            "crosswalk_blue" -> PEDESTRIAN_CROSSING (slow down, check for pedestrians)
-            "stop"           -> arm stop line trigger (toStop flag)
-            "parking"        -> PARKING mode
-            "highway_enter"  -> HIGHWAY mode (speed up)
-            "highway_exit"   -> LANE_FOLLOWING (restore speed)
-            "no_entry"       -> NO_ENTRY
-            "roundabout"     -> ROUNDABOUT
-            "one_way"        -> ONE_WAY
-            "red"            -> TRAFFIC_LIGHT_RED (stop car)
-            "yellow"         -> TRAFFIC_LIGHT_YELLOW (stop car)
-            "green"          -> TRAFFIC_LIGHT_GREEN (resume car)
-            "off"            -> no action
-            None             -> no detection
+        Maps each detection string to a DrivingMode transition
+        and sends the appropriate command (SpeedCommand / StopCommand)
+        to AutonomousDriving.
         """
         if detection is None:
             return
 
         # ─── Priority sign ───────────────────────────────────────
         if detection == "priority":
-            # Priority road — just keep driving normally
             pass
 
         # ─── Crosswalk / Pedestrian crossing ─────────────────────
@@ -369,7 +254,6 @@ class threadDecisionMaking(ThreadWithStop):
             if self._transition_mode(DrivingMode.PEDESTRIAN_CROSSING):
                 self._log("Pedestrian crossing detected")
                 # TODO: check for pedestrians with ultrasonic sensor
-                pass
 
         # ─── Stop sign ───────────────────────────────────────────
         elif detection == "stop":
@@ -382,22 +266,21 @@ class threadDecisionMaking(ThreadWithStop):
             if self._transition_mode(DrivingMode.PARKING):
                 self._log("Parking zone detected")
                 # TODO: parking maneuver if needToPark is True
-                pass
 
         # ─── Highway enter ───────────────────────────────────────
         elif detection == "highway_enter":
             if not self.highway:
-                self._log("Highway entrance detected — increasing speed!")
+                self._log("Highway entrance — commanding speed 300")
                 self.highway = True
-                self._set_speed(self.SPEED_HIGHWAY)
+                self.speed_command_sender.send(str(self.SPEED_HIGHWAY))
                 self._transition_mode(DrivingMode.HIGHWAY)
 
         # ─── Highway exit ────────────────────────────────────────
         elif detection == "highway_exit":
             if self.highway:
-                self._log("Highway exit detected — restoring speed")
+                self._log("Highway exit — commanding speed 150")
                 self.highway = False
-                self._set_speed(self.SPEED_NORMAL)
+                self.speed_command_sender.send(str(self.SPEED_NORMAL))
                 self._transition_mode(DrivingMode.LANE_FOLLOWING)
 
         # ─── No entry ────────────────────────────────────────────
@@ -415,33 +298,32 @@ class threadDecisionMaking(ThreadWithStop):
         # ─── Traffic lights ──────────────────────────────────────
         elif detection == "red":
             if not self.redLight:
-                self._log("RED LIGHT — stopping")
+                self._log("RED LIGHT — commanding stop")
                 self.redLight = True
                 self.yellowLight = False
                 self.greenLight = False
-                self._stop_car()
+                self.stop_command_sender.send("stop")
                 self._transition_mode(DrivingMode.TRAFFIC_LIGHT_RED)
 
         elif detection == "yellow":
             if not self.yellowLight:
-                self._log("YELLOW LIGHT — stopping")
+                self._log("YELLOW LIGHT — commanding stop")
                 self.redLight = False
                 self.yellowLight = True
                 self.greenLight = False
-                self._stop_car()
+                self.stop_command_sender.send("stop")
                 self._transition_mode(DrivingMode.TRAFFIC_LIGHT_YELLOW)
 
         elif detection == "green":
             if not self.greenLight:
-                self._log("GREEN LIGHT — resuming")
+                self._log("GREEN LIGHT — commanding resume")
                 self.redLight = False
                 self.yellowLight = False
                 self.greenLight = True
-                self._resume_car()
+                self.stop_command_sender.send("resume")
                 self._transition_mode(DrivingMode.TRAFFIC_LIGHT_GREEN)
 
         elif detection == "off":
-            # Traffic light off — no action
             pass
 
     # ═══════════════════════ GPS / PATH PLANNING ═════════════════════
@@ -478,7 +360,3 @@ class threadDecisionMaking(ThreadWithStop):
     def compute_route(self, start_id: str, end_id: str) -> bool:
         """Compute a route between two nodes."""
         return self.path_planning.compute_route(start_id, end_id)
-
-    def set_speed(self, speed):
-        """Public API for changing speed."""
-        self._set_speed(speed)

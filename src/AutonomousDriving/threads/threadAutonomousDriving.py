@@ -41,8 +41,10 @@ detects a stop line, the car stops for 3 seconds then continues.
 import time
 from src.templates.threadwithstop import ThreadWithStop
 from src.utils.messages.messageHandlerSender import messageHandlerSender
+from src.utils.messages.messageHandlerSubscriber import messageHandlerSubscriber
 from src.utils.messages.allMessages import (
-    Klem, SpeedMotor, SteerMotor, Brake
+    Klem, SpeedMotor, SteerMotor, Brake,
+    DetectionEvent, SpeedCommand, StopCommand,
 )
 
 # Import helper modules
@@ -86,23 +88,6 @@ class threadAutonomousDriving(ThreadWithStop):
         self.initialized = False
         self.is_driving = False
         self.last_steering = 0
-        self.toStop=False
-        self.redLight=False
-        self.yellowLight=False
-        self.greenLight=False
-        self.parkZone=False
-        self.highway=False
-        self.roundabout=False
-        self.crosswalk=False
-        self.stop_line_detected = False
-        self.needToPark=False
-        self.waiting=False
-        self.stop_start_time=0
-
-
-
-        self.stop_line_counter = 0
-        self.stop_line_confirm_frames = 2
         
         # Message handlers
         self._init_message_handlers()
@@ -110,11 +95,16 @@ class threadAutonomousDriving(ThreadWithStop):
         self.logger.info("[AutonomousDriving] Thread initialized")
 
     def _init_message_handlers(self):
-        """Initialize message senders."""
+        """Initialize message senders and subscribers for DM communication."""
         self.klem_sender = messageHandlerSender(self.queueList, Klem)
         self.speed_sender = messageHandlerSender(self.queueList, SpeedMotor)
         self.steer_sender = messageHandlerSender(self.queueList, SteerMotor)
         self.brake_sender = messageHandlerSender(self.queueList, Brake)
+        # Publish detections for DecisionMaking
+        self.detection_sender = messageHandlerSender(self.queueList, DetectionEvent)
+        # Subscribe to commands from DecisionMaking
+        self.speed_command_sub = messageHandlerSubscriber(self.queueList, SpeedCommand, "lastOnly", True)
+        self.stop_command_sub = messageHandlerSubscriber(self.queueList, StopCommand, "lastOnly", True)
 
     # ======================================= MOTOR CONTROL ==========================================
     def _stop_car(self):
@@ -135,6 +125,28 @@ class threadAutonomousDriving(ThreadWithStop):
         if angle != self.last_steering:
             self.steer_sender.send(str(angle))
             self.last_steering = angle
+
+    # ======================================= COMMAND PROCESSING ==========================================
+    def _process_commands(self):
+        """Process speed and stop/resume commands from DecisionMaking."""
+        # Speed command
+        speed_msg = self.speed_command_sub.receive()
+        if speed_msg is not None:
+            try:
+                speed = int(speed_msg)
+                self.logger.info(f"[AutonomousDriving] Speed command from DM: {speed}")
+                self.set_speed(speed)
+            except (ValueError, TypeError):
+                pass
+        # Stop/resume command
+        stop_msg = self.stop_command_sub.receive()
+        if stop_msg is not None:
+            if stop_msg == "stop":
+                self.logger.info("[AutonomousDriving] \U0001f6d1 Stop command from DM")
+                self._stop_car()
+            elif stop_msg == "resume":
+                self.logger.info("[AutonomousDriving] \u25b6 Resume command from DM")
+                self._resume_car()
 
     # ======================================= START ==========================================
     def start_autonomous_driving(self):
@@ -253,107 +265,31 @@ class threadAutonomousDriving(ThreadWithStop):
         #kada se upali
         else:
             try:
-                if not self.waiting:
-                    steer,detection,self.stop_line_detected=self.lane_detection.get_drive_params()
-                   #steer=0
-                    #print(f"[AutonomousDriving] detekcija: {detection}")
-                    # if self.stop_line_detected:
-                    #     print(self.stop_line_detected)
-                    if detection:
-                        print(detection)
-                    if detection == "priority":
-                    #stanje=vozi
-                        pass
+                # Process commands from DecisionMaking
+                self._process_commands()
 
-                    elif detection == "crosswalk_blue":
-                    #stanje=cross (ako je cross i detektuje sonicni (cekaj da predje))
-                        pass
+                # Get steering + detection from LaneDetection
+                result = self.lane_detection.get_drive_params()
+                if result is None:
+                    return
+                steer, detection, stop_line = result
 
-                    elif detection == "stop": #and self.stop_line_detected:
-                    #stanje="stop"
-                        if not self.toStop:
-                            self.toStop=True
-                        
+                # Publish detection event for DecisionMaking
+                if detection is not None or stop_line:
+                    self.detection_sender.send({
+                        "detection": detection,
+                        "stop_line": stop_line,
+                    })
 
-                    elif detection == "parking":
-                    #stanje=parking (kada ga detektuje i ako je park ukljucen i nema nista sa strane hard kodovati parkiranje)
-                        pass
+                # Send steering if driving
+                if self.is_driving:
+                    self._send_steering(steer)
 
-                    elif detection == "highway_enter":
-                        if not self.highway:
-                            self.logger.info("[AutonomousDriving] 🛣️ Highway entrance detected, increasing speed!")
-                            self.set_speed(300)  # Increase speed for highway
-                            self.highway = True
-                        
-
-                    elif detection == "highway_exit":
-                    #stanje=vozi
-                        if self.highway:
-                            self.logger.info("[AutonomousDriving] 🛣️ Highway exit detected, restoring speed!")
-                            self.set_speed(150)  # Restore normal speed
-                            self.highway = False
-                        
-
-                    elif detection == "no_entry":
-                    #kulijana nece se desiti
-                        pass
-
-                    elif detection == "roundabout":
-                    #kulijana
-                        pass
-
-                    elif detection == "one_way":
-                    #kulijana
-                        pass
-
-                    elif detection == "red":
-                    #stanje=wait
-                        if not self.redLight: 
-                            self.logger.info("[AutonomousDriving] 🛑 RED LIGHT...")
-                            self.redLight = True
-                            self.yellowLight=False
-                            self.greenLight=False
-                            self._stop_car()
-
-                    elif detection == "yellow":
-                        if not self.yellowLight: 
-                            self.logger.info("[AutonomousDriving] 🟡 YELLOW LIGHT...")
-                            self.redLight = False
-                            self.yellowLight=True
-                            self.greenLight=False
-                            self._stop_car()
-                        
-                    elif detection == "green":
-                        if not self.greenLight:
-                            self.logger.info("[AutonomousDriving] 🟢 GREEN LIGHT...")
-                            self.redLight=False
-                            self.yellowLight=False
-                            self.greenLight=True
-                            self._resume_car()
-
-                    elif detection == "off":
-                    #uradi manuelnu proveru dal ej stvarno off (necemo sad
-                        pass
-
-                    if self.stop_line_detected and self.toStop:
-                        self.logger.info("[AutonomousDriving] 🛑 STOP LINE detected, stopping for 2 seconds...")
-                        self._stop_car()
-                        self.waiting = True
-                        self.stop_start_time = time.time()
-
-                    if self.is_driving:
-                        self._send_steering(steer)
-                else:
-                    # Check if we have been waiting long enough to resume
-                    if time.time() - self.stop_start_time >= 2:
-                        self.logger.info("[AutonomousDriving] ⏱️ Waited 2 seconds, resuming driving...")
-                        self._resume_car()
-                        self.waiting = False
-                        self.toStop=False
-                    self.lane_detection.drain_frame()
-                    
             except Exception as e:
-                print(f"[AutonomousDriving] Error in main loop: {e}", exc_info=True)
+                self.logger.error(f"[AutonomousDriving] Error in main loop: {e}", exc_info=True)
+                print(f"\033[1;91m[AutonomousDriving] CRASH in thread_work: {e}\033[0m")
+                import traceback
+                traceback.print_exc()
 
     
 
